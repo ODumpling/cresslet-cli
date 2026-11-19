@@ -471,3 +471,171 @@ test("dev: Response stays instanceof-compatible, a 101 without upgrade is a 500,
   assert.equal(globalThis.Response, NativeResponse);
   assert.equal(globalThis.WebSocketPair, undefined);
 });
+
+// ---------------------------------------------------------------- review round 2
+test("deploy source: .cresslet/ at any depth, .envrc, .dev.vars left out; KEY=value comments dropped from dotenv", async () => {
+  const dir = copyFixture();
+  for (const f of ["nested/.cresslet/app.json", "nested/index.html", ".envrc", "sub/.envrc", ".dev.vars", "sub/.dev.vars"]) {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, f), f.endsWith("app.json") ? '{"deployKey":"key_nested"}' : "SECRET=x");
+  }
+  fs.writeFileSync(path.join(dir, ".env"), "# keep me\n# STRIPE_SECRET=sk_live_1\n#export DB_PASSWORD = x\nVITE_A=1\n\n# VITE_B=2 too\n");
+  const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
+  try {
+    await cli(dir, api, "deploy");
+    const { sources } = api.calls.at(-1).body;
+    const paths = sources.map((s) => s.path);
+    assert.ok(paths.includes("nested/index.html"), paths.join());
+    for (const p of paths) assert.doesNotMatch(p, /(^|\/)(\.cresslet\/|\.envrc$|\.dev\.vars$)/);
+    const env = sources.find((s) => s.path === ".env");
+    assert.equal(Buffer.from(env.data, env.encoding).toString(), "# keep me\nVITE_A=1\n\n");
+  } finally {
+    await api.close();
+  }
+});
+
+test("deploy --dir . sends no sources field (nothing left after filtering)", async () => {
+  const dir = copyFixture();
+  const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
+  try {
+    await cli(dir, api, "deploy", "--dir", ".");
+    assert.ok(!("sources" in api.calls.at(-1).body), Object.keys(api.calls.at(-1).body).join());
+  } finally {
+    await api.close();
+  }
+});
+
+test("pull refuses a destination that is (or is under) a symlink", async () => {
+  for (const mk of [
+    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a"]; },
+    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "up")); return ["pull", "a", "--dir", "up/a"]; },
+  ]) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-outside-"));
+    const api = await sourceApi(["ok.txt"]);
+    try {
+      await assert.rejects(cli(cwd, api, ...mk(cwd, outside)), /refusing to write through a symlink/);
+      assert.deepEqual(fs.readdirSync(outside), []);
+    } finally {
+      await api.close();
+    }
+  }
+});
+
+test("pull refuses .cresslet/ paths from the server; deploy key only from a link that existed before", async () => {
+  for (const bad of [".cresslet/app.json", "sub/.cresslet/app.json", ".Cresslet./app.json"]) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
+    const api = await sourceApi(["ok.txt", { path: bad, data: '{"name":"a","deployKey":"evil"}', encoding: "utf8" }]);
+    try {
+      await assert.rejects(cli(cwd, api, "pull", "a"), /refusing to pull/, bad);
+      assert.ok(!fs.existsSync(path.join(cwd, "a")), bad);
+    } finally {
+      await api.close();
+    }
+  }
+  // A pre-existing link in the destination for the same app + API keeps its key.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
+  const api = await sourceApi([{ path: "cresslet.json", data: '{"name":"a"}', encoding: "utf8" }]);
+  try {
+    fs.mkdirSync(path.join(cwd, "a", ".cresslet"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "a", ".cresslet", "app.json"), JSON.stringify({ name: "a", api: api.url, deployKey: "key_a" }));
+    await cli(cwd, api, "pull", "a", "--force");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, "a", ".cresslet", "app.json"), "utf8")).deployKey, "key_a");
+  } finally {
+    await api.close();
+  }
+});
+
+test("a pulled static app nested in another project is its own project root", async () => {
+  const proj = copyFixture();
+  fs.mkdirSync(path.join(proj, ".cresslet"), { recursive: true });
+  const api = await fakeApi({
+    "GET /v1/apps/s/source": () => ({ app: "s", deployId: "dep_1", files: [{ path: "index.html", data: "<p>s</p>", encoding: "utf8" }] }),
+    "GET /v1/apps/s/domains": () => ({ domains: [] }),
+  });
+  try {
+    fs.writeFileSync(path.join(proj, ".cresslet", "app.json"), JSON.stringify({ name: "a", api: api.url, deployKey: "key_a" }));
+    await cli(proj, api, "pull", "s");
+    fs.mkdirSync(path.join(proj, "s", "deep"));
+    for (const cwd of [path.join(proj, "s"), path.join(proj, "s", "deep")]) {
+      await cli(cwd, api, "domains");
+      assert.equal(api.calls.at(-1).path, "/v1/apps/s/domains", cwd);
+      assert.equal(api.calls.at(-1).headers["x-cresslet-deploy-key"], undefined);
+    }
+  } finally {
+    await api.close();
+  }
+});
+
+test("domains / egress --app <other>: the project's deploy key isn't sent", async () => {
+  const dir = copyFixture();
+  const api = await fakeApi({
+    "GET /v1/apps/a/domains": () => ({ domains: [] }),
+    "GET /v1/apps/x/domains": () => ({ domains: [] }),
+    "GET /v1/apps/a/egress": () => ({ allow: [] }),
+    "GET /v1/apps/x/egress": () => ({ allow: [] }),
+  });
+  try {
+    fs.mkdirSync(path.join(dir, ".cresslet"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".cresslet", "app.json"), JSON.stringify({ name: "a", api: api.url, deployKey: "key_a" }));
+    for (const cmd of ["domains", "egress"]) {
+      await cli(dir, api, cmd);
+      assert.equal(api.calls.at(-1).headers["x-cresslet-deploy-key"], "key_a", cmd);
+      await cli(dir, api, cmd, "--app", "x");
+      assert.equal(api.calls.at(-1).headers["x-cresslet-deploy-key"], undefined, `${cmd} --app x`);
+      await cli(dir, api.url.replace("127.0.0.1", "localhost"), cmd);
+      assert.equal(api.calls.at(-1).headers["x-cresslet-deploy-key"], undefined, `${cmd} other api`);
+    }
+  } finally {
+    await api.close();
+  }
+});
+
+test("dev: a failed startup restores the globals", async () => {
+  const NativeResponse = globalThis.Response;
+  const busy = http.createServer();
+  await new Promise((r) => busy.listen(0, "localhost", r));
+  try {
+    const dir = copyFixture();
+    fs.writeFileSync(path.join(dir, "server", "index.ts"), SERVER);
+    await assert.rejects(dev(loadProject(dir), { port: busy.address().port, log: () => {} }), /EADDRINUSE/);
+    assert.equal(globalThis.Response, NativeResponse);
+    assert.equal(globalThis.WebSocketPair, undefined);
+  } finally {
+    await new Promise((r) => busy.close(r));
+  }
+});
+
+test("Response shim: instanceof compat only for the shim itself; error reporter reset on uninstall", async () => {
+  const { installWebSocketPolyfill } = await import("../lib/websocket.js");
+  const NativeResponse = globalThis.Response;
+  const seen = [];
+  let uninstall = installWebSocketPolyfill({ onListenerError: (type) => seen.push(type) });
+  try {
+    const Shim = globalThis.Response;
+    class Sub extends Shim {}
+    assert.ok(new NativeResponse("x") instanceof Shim);
+    assert.ok(!(new NativeResponse("x") instanceof Sub));
+    assert.ok(!(new Shim("x") instanceof Sub));
+    assert.ok(new Sub("x") instanceof Sub);
+    assert.ok(new Sub("x") instanceof Shim);
+  } finally {
+    uninstall();
+  }
+  uninstall = installWebSocketPolyfill();
+  const errors = [];
+  const orig = console.error;
+  console.error = (...a) => errors.push(a);
+  try {
+    const [a, b] = Object.values(new globalThis.WebSocketPair());
+    a.accept();
+    b.accept();
+    a.addEventListener("message", () => { throw new Error("x"); });
+    b.send("hi");
+    assert.deepEqual(seen, []);
+    assert.equal(errors.length, 1);
+  } finally {
+    console.error = orig;
+    uninstall();
+  }
+});
