@@ -18,7 +18,7 @@ const COMMANDS = {
   rollback: [c.cmdRollback, "rollback [deployId]", "serve a previous deploy"],
   open: [c.cmdOpen, "open", "open the deployed app"],
   delete: [c.cmdDelete, "delete [-y]", "delete the app and its data"],
-  login: [c.cmdLogin, "login [--email e]", "log in (creates an account)"],
+  login: [c.cmdLogin, "login [--token t] [--no-browser]", "log in with GitHub, or a token from studio Settings"],
   logout: [c.cmdLogout, "logout", "forget the token"],
   whoami: [c.cmdWhoami, "whoami", "show the logged-in account"],
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
@@ -49,7 +49,7 @@ if (!entry) {
 }
 
 try {
-  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force"] }));
+  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);

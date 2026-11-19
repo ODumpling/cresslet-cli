@@ -24,7 +24,7 @@ Requires Node ≥ 22.13. Server: `CRESSLET_API` / `--api` (default `http://local
 | `db [sql]` | dump tables or run read-only SQL |
 | `secrets [list \| set K=V… \| unset K…]` | claimed apps only |
 | `inspect [app\|url]`, `rollback [deployId]`, `open`, `delete [-y]` | |
-| `login [--email]`, `logout`, `whoami`, `claim`, `apps` | accounts |
+| `login [--token t] [--no-browser]`, `logout`, `whoami`, `claim`, `apps` | accounts. `login` = GitHub device code; `--token` = token from studio Settings |
 
 Global: `--api <url>`, `--json`, `--app <name>`. Env: `CRESSLET_API`, `CRESSLET_TOKEN`, `CRESSLET_DEPLOY_KEY` (CI).
 
