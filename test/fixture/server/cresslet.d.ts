@@ -1,4 +1,4 @@
-// Types for the Clover server runtime. See https://github.com/ODumpling/clover/blob/main/docs/app-format.md
+// Types for the Cresslet server runtime. See https://github.com/ODumpling/cresslet/blob/main/docs/app-format.md
 type SQLValue = string | number | bigint | null | Uint8Array;
 
 export interface Env {
@@ -20,7 +20,7 @@ export interface Env {
     delete(key: string): Promise<void>;
     list(prefix?: string): Promise<{ key: string; size: number; contentType: string; updatedAt: number }[]>;
   };
-  /** Set with `clover secrets set KEY=value` (claimed apps only). */
+  /** Set with `cresslet secrets set KEY=value` (claimed apps only). */
   secrets: Readonly<Record<string, string>>;
   app: { id: string; name: string; url: string; deployId: string };
 }

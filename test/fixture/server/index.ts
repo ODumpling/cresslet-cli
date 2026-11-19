@@ -1,5 +1,5 @@
-// Server API. Runs in a sandbox on Clover; handles requests matching `routes` in clover.json.
-import type { Env } from "./clover";
+// Server API. Runs in a sandbox on Cresslet; handles requests matching `routes` in cresslet.json.
+import type { Env } from "./cresslet";
 
 let ready: Promise<void> | undefined;
 

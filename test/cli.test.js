@@ -11,7 +11,7 @@ import { dev, matchRoute } from "../lib/dev.js";
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixture");
 
 function copyFixture() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clover-cli-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
   fs.cpSync(FIXTURE, dir, { recursive: true });
   return dir;
 }
@@ -57,15 +57,15 @@ test("build produces hashed client + server bundle", async () => {
 
 test("dev server: static, api with sqlite, dotfiles hidden", async () => {
   const dir = copyFixture();
-  fs.writeFileSync(path.join(dir, ".env.clover"), "SECRET=1\n");
+  fs.writeFileSync(path.join(dir, ".env.cresslet"), "SECRET=1\n");
   const d = await dev(loadProject(dir), { port: 0, log: () => {} });
   try {
     const home = await (await fetch(d.url + "/")).text();
     assert.match(home, /\/assets\/src\/main\.js/);
-    assert.match(home, /__clover\/reload/);
+    assert.match(home, /__cresslet\/reload/);
     assert.equal((await (await fetch(d.url + "/api/visits", { method: "POST" })).json()).visits, 1);
     assert.equal((await (await fetch(d.url + "/api/visits", { method: "POST" })).json()).visits, 2);
-    assert.equal((await fetch(d.url + "/.env.clover")).status, 404);
+    assert.equal((await fetch(d.url + "/.env.cresslet")).status, 404);
     assert.equal((await fetch(d.url + "/server/index.ts")).status, 404);
     assert.equal((await fetch(d.url + "/assets/src/main.js")).status, 200);
     assert.match(await (await fetch(d.url + "/some/route")).text(), /<main>/);

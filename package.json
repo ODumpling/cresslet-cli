@@ -1,11 +1,11 @@
 {
-  "name": "@odumpling/clover-cli",
+  "name": "@odumpling/cresslet-cli",
   "version": "0.1.0",
-  "description": "CLI for Clover: create, run, and deploy small web apps.",
+  "description": "CLI for Cresslet: create, run, and deploy small web apps.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "clover": "bin/clover.js"
+    "cresslet": "bin/cresslet.js"
   },
   "files": [
     "bin",
@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ODumpling/clover-cli.git"
+    "url": "git+https://github.com/ODumpling/cresslet-cli.git"
   },
   "scripts": {
     "test": "node --test test/*.test.js"

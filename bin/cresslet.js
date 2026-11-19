@@ -9,7 +9,7 @@ const COMMANDS = {
   init: [c.cmdInit, "init [--template react|vanilla]", "create an app in the current directory"],
   templates: [c.cmdTemplates, "templates", "list templates"],
   dev: [c.cmdDev, "dev [--port 3000]", "run locally with live reload"],
-  build: [c.cmdBuild, "build", "production build (dist/ + .clover/build/server.js)"],
+  build: [c.cmdBuild, "build", "production build (dist/ + .cresslet/build/server.js)"],
   deploy: [c.cmdDeploy, "deploy [--name n] [--dir d --server f]", "build and deploy; prints the URL"],
   logs: [c.cmdLogs, "logs [app|url] [-f] [-n 100]", "show server + request logs"],
   db: [c.cmdDb, "db [sql]", "inspect the deployed database (read-only)"],
@@ -26,10 +26,10 @@ const COMMANDS = {
 };
 
 function help() {
-  console.log(`${color.bold("clover")} ${VERSION} — create, run and deploy small web apps\n`);
-  console.log("usage: clover <command> [options]\n");
+  console.log(`${color.bold("cresslet")} ${VERSION} — create, run and deploy small web apps\n`);
+  console.log("usage: cresslet <command> [options]\n");
   for (const [, usage, desc] of Object.values(COMMANDS)) console.log(`  ${usage.padEnd(42)} ${color.dim(desc)}`);
-  console.log(`\nglobal: --api <url> (or CLOVER_API), --json (machine-readable output), --app <name>`);
+  console.log(`\nglobal: --api <url> (or CRESSLET_API), --json (machine-readable output), --app <name>`);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
