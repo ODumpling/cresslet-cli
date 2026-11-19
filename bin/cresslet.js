@@ -10,9 +10,12 @@ const COMMANDS = {
   templates: [c.cmdTemplates, "templates", "list templates"],
   dev: [c.cmdDev, "dev [--port 3000]", "run locally with live reload"],
   build: [c.cmdBuild, "build", "production build (dist/ + .cresslet/build/server.js)"],
-  deploy: [c.cmdDeploy, "deploy [--name n] [--dir d --server f]", "build and deploy; prints the URL"],
+  deploy: [c.cmdDeploy, "deploy [--name n] [--dir d --server f]", "build and deploy (+ source); prints the URL"],
+  pull: [c.cmdPull, "pull [app|url] [--dir d] [--deploy id]", "download a deploy's source"],
   logs: [c.cmdLogs, "logs [app|url] [-f] [-n 100]", "show server + request logs"],
   db: [c.cmdDb, "db [sql]", "inspect the deployed database (read-only)"],
+  domains: [c.cmdDomains, "domains [add|verify|rm <domain>]", "custom domains (claimed apps)"],
+  egress: [c.cmdEgress, "egress [allow <host…>|clear]", "outbound fetch allowlist (claimed apps)"],
   secrets: [c.cmdSecrets, "secrets [list|set K=V|unset K]", "manage server secrets (claimed apps)"],
   inspect: [c.cmdInspect, "inspect [app|url]", "show app status and deploys"],
   rollback: [c.cmdRollback, "rollback [deployId]", "serve a previous deploy"],
@@ -49,7 +52,7 @@ if (!entry) {
 }
 
 try {
-  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser"] }));
+  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);

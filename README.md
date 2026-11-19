@@ -16,13 +16,16 @@ Requires Node ≥ 22.13. Server: `CRESSLET_API` / `--api` (default `http://local
 | | |
 |---|---|
 | `new <dir> [--template react\|vanilla]`, `init`, `templates` | scaffold |
-| `dev [--port 3000]` | esbuild watch, live reload, server handler with local `env.db`/`env.files`, secrets from `.env.cresslet` |
+| `dev [--port 3000]` | esbuild watch, live reload, server handler with local `env.db`/`env.files`, secrets from `.env.cresslet`. WebSockets (`WebSocketPair`) work on server routes; run a cron by hand with `curl -X POST 'localhost:3000/__cresslet/scheduled?cron=<expr>'` |
 | `build` | client → `dist/`, server → `.cresslet/build/server.js` |
-| `deploy [--name n]` | build + upload. First deploy stores the deploy key in `.cresslet/app.json` (gitignored) |
+| `deploy [--name n] [--no-source]` | build + upload, with `crons` from `cresslet.json` and the project source (minus `node_modules/`, `dist/`, `.cresslet/`, `.git/`, `.env.cresslet*`, `.gitignore`d files). First deploy stores the deploy key in `.cresslet/app.json` (gitignored) |
 | `deploy --dir <static> [--server <bundle.js>]` | deploy prebuilt output (any toolchain) |
+| `pull [app\|url] [--dir d] [--deploy id] [--force]` | download the source of the current (or given) deploy into `./<app>` and link it |
 | `logs [app\|url] [-f] [-n N]` | server stdout/stderr, request log, system events |
 | `db [sql]` | dump tables or run read-only SQL |
 | `secrets [list \| set K=V… \| unset K…]` | claimed apps only |
+| `domains [add \| verify \| rm <domain>]` | custom domains (claimed apps). `add` prints the CNAME + TXT records to create, then `verify` |
+| `egress [allow <host…> \| clear]` | outbound `fetch` allowlist (claimed apps). `allow` sets the whole list (`*.` = subdomains); `clear` = any public host |
 | `inspect [app\|url]`, `rollback [deployId]`, `open`, `delete [-y]` | |
 | `login [--token t] [--no-browser]`, `logout`, `whoami`, `claim`, `apps` | accounts. `login` = GitHub device code; `--token` = token from studio Settings |
 
