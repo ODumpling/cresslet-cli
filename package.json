@@ -1,0 +1,27 @@
+{
+  "name": "@odumpling/clover-cli",
+  "version": "0.1.0",
+  "description": "CLI for Clover: create, run, and deploy small web apps.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "clover": "bin/clover.js"
+  },
+  "files": [
+    "bin",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ODumpling/clover-cli.git"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

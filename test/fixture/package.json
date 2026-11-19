@@ -1,0 +1,13 @@
+{
+  "name": "clover-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "clover dev",
+    "build": "clover build",
+    "deploy": "clover deploy"
+  },
+  "devDependencies": {
+    "@odumpling/clover-cli": "github:ODumpling/clover-cli"
+  }
+}
