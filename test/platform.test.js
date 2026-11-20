@@ -711,6 +711,8 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
     fs.writeFileSync(path.join(dir, f), "SECRET=x");
   }
   fs.writeFileSync(path.join(dir, "sub", ".ENV"), "SECRET=x\nVITE_A=1\n");
+  fs.writeFileSync(path.join(dir, "sub", ".ENV_BACKUP"), "SECRET=x\nVITE_B=1\n");
+  fs.writeFileSync(path.join(dir, "sub", ".environment.js"), "export const x = 1;\n");
   const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
   try {
     await cli(dir, api, "deploy");
@@ -720,6 +722,10 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
     for (const f of secret) assert.ok(!paths.includes(f), f);
     const env = sources.find((s) => s.path === "sub/.ENV");
     assert.equal(Buffer.from(env.data, env.encoding).toString(), "VITE_A=1\n");
+    const backup = sources.find((s) => s.path === "sub/.ENV_BACKUP");
+    assert.equal(Buffer.from(backup.data, backup.encoding).toString(), "VITE_B=1\n"); // any .env-style name is sanitized
+    const code = sources.find((s) => s.path === "sub/.environment.js");
+    assert.equal(Buffer.from(code.data, code.encoding).toString(), "export const x = 1;\n"); // not a dotenv file
 
     await cli(dir, api, "deploy", "--dir", "sub");
     const files = api.calls.at(-1).body.files.map((f) => f.path);
@@ -729,6 +735,11 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
     for (const d of [".cresslet", "node_modules/foo", ".git", "sub/Node_Modules"]) {
       await assert.rejects(cli(dir, api, "deploy", "--dir", d), /refusing to deploy --dir/, d);
     }
+    // Also outside this project (e.g. a sibling project's deps).
+    const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "sib-"));
+    fs.mkdirSync(path.join(sibling, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(sibling, "node_modules", "pkg", "index.html"), "x");
+    await assert.rejects(cli(dir, api, "deploy", "--dir", path.join(sibling, "node_modules", "pkg")), /refusing to deploy --dir/);
     assert.equal(api.calls.length, n);
   } finally {
     await api.close();
