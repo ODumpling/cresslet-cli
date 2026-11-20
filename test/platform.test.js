@@ -683,3 +683,74 @@ test("Response shim: instanceof compat only for the shim itself; error reporter 
     uninstall();
   }
 });
+
+test("pull re-checks the destination after the API response (now a symlink, or an ancestor swapped → refused)", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-outside-"));
+  let swap = () => {};
+  const api = await fakeApi({
+    "GET /v1/apps/a/source": () => (swap(), { app: "a", deployId: "dep_1", files: [{ path: "ok.txt", data: "x", encoding: "utf8" }] }),
+  });
+  try {
+    swap = () => fs.symlinkSync(outside, path.join(cwd, "a")); // the destination itself
+    await assert.rejects(cli(cwd, api, "pull", "a"), /refusing to write through a symlink/);
+    fs.mkdirSync(path.join(cwd, "p"));
+    swap = () => { fs.rmdirSync(path.join(cwd, "p")); fs.symlinkSync(outside, path.join(cwd, "p")); }; // an ancestor
+    await assert.rejects(cli(cwd, api, "pull", "a", "--dir", path.join(cwd, "p", "x")), /changed while pulling/);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    await api.close();
+  }
+});
+
+test("deploy filters match names case-insensitively; --dir inside .cresslet/.git/node_modules is refused", async () => {
+  const dir = copyFixture();
+  const secret = ["sub/.CRESSLET/app.json", "sub/.ENV.LOCAL", "sub/.EnvRC", "sub/.Dev.Vars", "sub/Node_Modules/x.js", "sub/.GIT/HEAD"];
+  for (const f of [...secret, "sub/ok.txt", "node_modules/foo/a.js", ".git/b"]) {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, f), "SECRET=x");
+  }
+  fs.writeFileSync(path.join(dir, "sub", ".ENV"), "SECRET=x\nVITE_A=1\n");
+  const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
+  try {
+    await cli(dir, api, "deploy");
+    const { sources } = api.calls.at(-1).body;
+    const paths = sources.map((s) => s.path);
+    assert.ok(paths.includes("sub/ok.txt"), paths.join());
+    for (const f of secret) assert.ok(!paths.includes(f), f);
+    const env = sources.find((s) => s.path === "sub/.ENV");
+    assert.equal(Buffer.from(env.data, env.encoding).toString(), "VITE_A=1\n");
+
+    await cli(dir, api, "deploy", "--dir", "sub");
+    const files = api.calls.at(-1).body.files.map((f) => f.path);
+    assert.deepEqual(files, ["ok.txt"]);
+
+    const n = api.calls.length;
+    for (const d of [".cresslet", "node_modules/foo", ".git", "sub/Node_Modules"]) {
+      await assert.rejects(cli(dir, api, "deploy", "--dir", d), /refusing to deploy --dir/, d);
+    }
+    assert.equal(api.calls.length, n);
+  } finally {
+    await api.close();
+  }
+});
+
+test("dev: a failed startup while another dev runs restores that instance's WebSocket error reporter", async () => {
+  const logs = { a: [], b: [] };
+  const a = await devWith(SERVER, (m) => logs.a.push(m));
+  try {
+    const dir = copyFixture();
+    fs.writeFileSync(path.join(dir, "server", "index.ts"), SERVER);
+    const port = new URL(a.url).port;
+    await assert.rejects(dev(loadProject(dir), { port, log: (m) => logs.b.push(m) }), /EADDRINUSE/);
+    const [x, y] = Object.values(new globalThis.WebSocketPair());
+    x.accept();
+    y.accept();
+    x.addEventListener("message", () => { throw new Error("boom"); });
+    y.send("hi");
+    assert.ok(logs.a.some((m) => /WebSocket message listener error/.test(m)), logs.a.join("\n"));
+    assert.ok(!logs.b.some((m) => /listener error/.test(m)), logs.b.join("\n"));
+  } finally {
+    await a.close();
+  }
+});
