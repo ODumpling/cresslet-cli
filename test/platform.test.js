@@ -505,10 +505,54 @@ test("deploy --dir . sends no sources field (nothing left after filtering)", asy
   }
 });
 
-test("pull refuses a destination that is (or is under) a symlink", async () => {
+test("deploy --dir never uploads CLI metadata, secrets, .git or node_modules (any depth)", async () => {
+  const dir = copyFixture();
+  const skipped = [".cresslet/app.json", ".env", ".env.production", ".envrc", ".dev.vars", ".git/config",
+    "node_modules/x/index.js", "sub/.cresslet/app.json", "sub/.env.local", "sub/.dev.vars", "sub/.git/HEAD", "sub/node_modules/y.js"];
+  for (const f of [...skipped, "sub/ok.txt"]) {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, f), "secret");
+  }
+  const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
+  try {
+    const { stderr } = await cli(dir, api, "deploy", "--dir", ".");
+    const paths = api.calls.at(-1).body.files.map((f) => f.path);
+    for (const f of skipped) assert.ok(!paths.includes(f), f);
+    assert.ok(!paths.some((p) => /(^|\/)(\.cresslet|\.git|node_modules)\//.test(p)), paths.join());
+    assert.ok(paths.includes("sub/ok.txt") && paths.includes("index.html"), paths.join());
+    assert.equal(stderr.match(/not uploaded/g)?.length, 1, stderr);
+    assert.match(stderr, /\.cresslet\/.*\.env\b.*node_modules\//s);
+  } finally {
+    await api.close();
+  }
+});
+
+test("pull --dir works through a symlinked ancestor (macOS /tmp); a symlink at or inside the destination is refused", async () => {
+  const real = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-real-"));
+  const via = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-via-")), "tmp"); // like /tmp → /private/tmp
+  fs.symlinkSync(real, via);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
+  const api = await sourceApi(["ok.txt", "d/f.txt"]);
+  try {
+    await cli(cwd, api, "pull", "a", "--dir", path.join(via, "x"));
+    assert.equal(fs.readFileSync(path.join(real, "x", "d", "f.txt"), "utf8"), "x");
+
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-outside-"));
+    fs.symlinkSync(outside, path.join(real, "y")); // AT the destination, reached via the symlinked ancestor
+    await assert.rejects(cli(cwd, api, "pull", "a", "--dir", path.join(via, "y")), /refusing to write through a symlink/);
+    fs.mkdirSync(path.join(real, "z"));
+    fs.symlinkSync(outside, path.join(real, "z", "d")); // inside it
+    await assert.rejects(cli(cwd, api, "pull", "a", "--dir", path.join(via, "z"), "--force"), /refusing to write through a symlink/);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    await api.close();
+  }
+});
+
+test("pull refuses a destination that is a symlink", async () => {
   for (const mk of [
     (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a"]; },
-    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "up")); return ["pull", "a", "--dir", "up/a"]; },
+    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a", "--dir", "a"]; },
   ]) {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-outside-"));
