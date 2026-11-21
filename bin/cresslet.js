@@ -26,6 +26,8 @@ const COMMANDS = {
   whoami: [c.cmdWhoami, "whoami", "show the logged-in account"],
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
   apps: [c.cmdApps, "apps", "list your apps"],
+  page: [c.cmdPage, "page [ls|upload|show|update|set|open|rm]", "static HTML pages: upload <file|dir> [--visibility v] [--keep days|forever]"],
+  settings: [c.cmdSettings, "settings [--page-visibility|--page-keep]", "your defaults for new pages (--reset: the server's)"],
 };
 
 function help() {
@@ -52,7 +54,7 @@ if (!entry) {
 }
 
 try {
-  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source"] }));
+  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);
