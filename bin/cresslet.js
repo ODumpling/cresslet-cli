@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import * as c from "../lib/commands.js";
+import { createRequire } from "node:module";
 import { CliError, color, parseArgs } from "../lib/util.js";
 
-const VERSION = "0.1.0";
+const { version: VERSION } = createRequire(import.meta.url)("../package.json");
 
 const COMMANDS = {
   new: [c.cmdNew, "new <dir> [--template react|vanilla]", "create an app from a template"],
@@ -50,11 +51,14 @@ if (cmd === "--version" || cmd === "-v") {
 }
 // `auth login|logout|status`: same as login / logout / whoami.
 const AUTH = { login: "login", logout: "logout", status: "whoami" };
+// `--help` / `-h` anywhere before `--` prints the command's usage instead of running it.
+const end = rest.indexOf("--");
+const wantsHelp = (end === -1 ? rest : rest.slice(0, end)).some((a) => a === "--help" || a === "-h");
 let args = rest;
 let name = cmd;
 if (cmd === "auth") {
   const usage = "usage: cresslet auth login [--token t] [--no-browser] | logout | status";
-  if (rest.some((a) => a === "--help" || a === "-h")) {
+  if (wantsHelp) {
     console.log(usage);
     process.exit(0);
   }
@@ -66,11 +70,15 @@ if (cmd === "auth") {
     process.exit(1);
   }
 }
-const entry = COMMANDS[name];
+const entry = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
 if (!entry) {
   console.error(color.red(`unknown command: ${cmd}`));
   help();
   process.exit(1);
+}
+if (wantsHelp) {
+  console.log(`usage: cresslet ${entry[1]}\n\n  ${entry[2]}`);
+  process.exit(0);
 }
 
 try {
