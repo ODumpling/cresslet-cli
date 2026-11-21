@@ -76,7 +76,7 @@ test("deploy sends crons and project source (minus deps, build output, secrets, 
     for (const p of paths) assert.doesNotMatch(p, /^(node_modules|dist|\.cresslet|logs)\/|secret|\.log$|\.env\.cresslet|\.cfg-test|\.local$/);
     for (const p of [".env", ".env.production"]) {
       const f = body.sources.find((s) => s.path === p);
-      assert.equal(Buffer.from(f.data, f.encoding).toString(), "# public\nVITE_A=1\nexport CRESSLET_PUBLIC_B=2\n", p);
+      assert.equal(Buffer.from(f.data, f.encoding).toString(), "VITE_A=1\nexport CRESSLET_PUBLIC_B=2\n", p); // comments dropped (as the server)
     }
     const bin = body.sources.find((s) => s.path === "src/logo.bin");
     assert.deepEqual([...Buffer.from(bin.data, bin.encoding)], [0, 255, 1]);
@@ -473,7 +473,7 @@ test("dev: Response stays instanceof-compatible, a 101 without upgrade is a 500,
 });
 
 // ---------------------------------------------------------------- review round 2
-test("deploy source: .cresslet/ at any depth, .envrc, .dev.vars left out; KEY=value comments dropped from dotenv", async () => {
+test("deploy source: .cresslet/ at any depth, .envrc, .dev.vars left out; comments dropped from dotenv", async () => {
   const dir = copyFixture();
   for (const f of ["nested/.cresslet/app.json", "nested/index.html", ".envrc", "sub/.envrc", ".dev.vars", "sub/.dev.vars"]) {
     fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
@@ -488,7 +488,7 @@ test("deploy source: .cresslet/ at any depth, .envrc, .dev.vars left out; KEY=va
     assert.ok(paths.includes("nested/index.html"), paths.join());
     for (const p of paths) assert.doesNotMatch(p, /(^|\/)(\.cresslet\/|\.envrc$|\.dev\.vars$)/);
     const env = sources.find((s) => s.path === ".env");
-    assert.equal(Buffer.from(env.data, env.encoding).toString(), "# keep me\nVITE_A=1\n\n");
+    assert.equal(Buffer.from(env.data, env.encoding).toString(), "VITE_A=1\n\n");
   } finally {
     await api.close();
   }
@@ -725,7 +725,7 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
     const backup = sources.find((s) => s.path === "sub/.ENV_BACKUP");
     assert.equal(Buffer.from(backup.data, backup.encoding).toString(), "VITE_B=1\n"); // any .env-style name is sanitized
     const code = sources.find((s) => s.path === "sub/.environment.js");
-    assert.equal(Buffer.from(code.data, code.encoding).toString(), "export const x = 1;\n"); // not a dotenv file
+    assert.equal(Buffer.from(code.data, code.encoding).toString(), ""); // any .env* name, as the server sanitizes it
 
     await cli(dir, api, "deploy", "--dir", "sub");
     const files = api.calls.at(-1).body.files.map((f) => f.path);
