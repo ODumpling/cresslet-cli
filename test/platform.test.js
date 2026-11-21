@@ -944,7 +944,13 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     fs.writeFileSync(path.join(proj, "dist/index.html"), "<h1>built</h1>");
     await assert.rejects(cli(proj, api, "deploy", "dist"), (e) => /dist is inside the app project \.[\s\S]*cresslet deploy dist --artifact/.test(e.stderr));
     assert.ok(!api.calls.length);
-    assert.match((await cli(proj, api, "deploy", "dist", "--artifact")).stdout, /deployed artifact pg-\d+ \(new\)/);
+    // A new artifact in a project goes to the project's server, as its app does.
+    fs.mkdirSync(path.join(proj, ".cresslet"), { recursive: true });
+    fs.writeFileSync(path.join(proj, ".cresslet/app.json"), JSON.stringify({ api: api.url }));
+    const r = await run(process.execPath, [CLI, "deploy", "dist", "--artifact"], {
+      cwd: proj, env: { ...process.env, CRESSLET_API: "", CRESSLET_TOKEN: "tok", CRESSLET_CONFIG_DIR: path.join(proj, ".cfg-test"), NO_COLOR: "1" },
+    });
+    assert.match(r.stdout, /deployed artifact pg-\d+ \(new\)/);
     calls();
 
     for (const [cwd, args, msg] of [
