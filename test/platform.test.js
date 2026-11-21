@@ -815,8 +815,8 @@ test("page: upload a file or folder with settings, set / update / open / rm; set
     assert.deepEqual(api.calls.at(-1).body, { visibility: "private", retentionDays: 3 });
     await cli(dir, api, "page", "update", "pg-1", "notes.html", "--keep", "30");
     assert.deepEqual(api.calls.slice(-2).map((c) => [c.method, c.path, c.body]), [
-      ["PUT", "/v1/pages/pg-1", { html: "<h1>notes</h1>", source: "cli" }],
       ["PATCH", "/v1/pages/pg-1", { retentionDays: 30 }],
+      ["PUT", "/v1/pages/pg-1", { html: "<h1>notes</h1>", source: "cli" }],
     ]);
     assert.equal(JSON.parse((await cli(dir, api, "page", "open", "pg-1", "--json")).stdout).url, "http://pg-1.x/?cresslet_view=pvt_1");
     await cli(dir, api, "page", "rm", "pg-1", "-y");
@@ -842,10 +842,11 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
   const proj = copyFixture();
   const page = (over = {}) => ({ id: "app_1", name: "pg-1", title: "notes", url: "http://pg-1.x", visibility: "private", retentionDays: 30, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...over });
   const made = new Set();
+  const pg1 = {}; // settings PATCHed so far
   const api = await fakeApi({
     "POST /v1/pages": (b) => (made.add(b.name), { $status: 201, page: page({ name: b.name ?? "pg-1", title: b.title }) }),
-    "PUT /v1/pages/pg-1": () => ({ page: page() }),
-    "PATCH /v1/pages/pg-1": (b) => ({ page: page({ ...b }) }),
+    "PUT /v1/pages/pg-1": () => ({ page: page(pg1) }),
+    "PATCH /v1/pages/pg-1": (b) => ({ page: page(Object.assign(pg1, b)) }),
     "PUT /v1/pages/my-site": () => (made.has("my-site")
       ? { page: page({ name: "my-site", url: "http://my-site.x" }) }
       : { $status: 404, error: "not_found", message: "page not found: my-site" }),
@@ -862,7 +863,7 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     calls();
     const again = JSON.parse((await cli(dir, api, "deploy", "notes.html", "--keep", "3", "--json")).stdout);
     assert.deepEqual([again.kind, again.created, again.artifact.retentionDays], ["artifact", false, 3]);
-    assert.deepEqual(calls(), [["PUT", "/v1/pages/pg-1"], ["PATCH", "/v1/pages/pg-1"]]);
+    assert.deepEqual(calls(), [["PATCH", "/v1/pages/pg-1"], ["PUT", "/v1/pages/pg-1"]], "settings before the new files");
 
     // A folder with --artifact and an address of your own: created under it, then updated from inside the folder.
     assert.match((await cli(dir, api, "deploy", "site", "--artifact", "--name", "my-site")).stdout, /deployed artifact my-site \(new\)/);
@@ -871,11 +872,30 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     calls();
     assert.match((await cli(path.join(dir, "site"), api, "deploy")).stdout, /deployed artifact my-site \(updated, same link\)/);
     assert.deepEqual(calls(), [["PUT", "/v1/pages/my-site"]]);
-    assert.ok(!api.calls.length);
+    // The link lives next to the folder: rebuilding it (as a build does with dist/) keeps it.
+    fs.rmSync(path.join(dir, "site"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "site"));
+    fs.writeFileSync(path.join(dir, "site/index.html"), "<h1>site 2</h1>");
+    assert.match((await cli(dir, api, "deploy", "site")).stdout, /deployed artifact my-site \(updated, same link\)/);
+    assert.deepEqual(calls(), [["PUT", "/v1/pages/my-site"]]);
+
+    // A linked artifact that's gone (expired, deleted): a new one at a new address, said so.
+    fs.writeFileSync(path.join(dir, ".cresslet/artifacts.json"), JSON.stringify({ "notes.html": { name: "pg-old", api: api.url } }));
+    const redo = await cli(dir, api, "deploy", "notes.html");
+    assert.match(redo.stdout, /pg-old is gone[\s\S]*new address[\s\S]*deployed artifact pg-1 \(new\)/);
+    assert.deepEqual(api.calls.map((c) => [c.method, c.path, c.body?.name]), [["PUT", "/v1/pages/pg-old", undefined], ["POST", "/v1/pages", undefined]]);
+    calls();
+    // Redeploys go to the server it was deployed to, without --api.
+    fs.writeFileSync(path.join(dir, ".cresslet/artifacts.json"), JSON.stringify({ "notes.html": { name: "pg-1", api: api.url } }));
+    await run(process.execPath, [CLI, "deploy", "notes.html"], {
+      cwd: dir, env: { ...process.env, CRESSLET_API: "", CRESSLET_TOKEN: "tok", CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1" },
+    });
+    assert.deepEqual(calls(), [["PUT", "/v1/pages/pg-1"]]);
 
     // Any other folder is still a public app, and says so.
     const app = await cli(dir, api, "deploy", "static");
-    assert.match(app.stdout, /deployed app quiet-1[\s\S]*public app[\s\S]*cresslet deploy --artifact/);
+    assert.match(app.stderr, /static has no cresslet\.json: it goes live as a public app/);
+    assert.match(app.stdout, /deployed app quiet-1[\s\S]*cresslet deploy static --artifact, then take this app down: cd static && cresslet delete/);
     assert.deepEqual(calls(), [["POST", "/v1/deploys"]]);
 
     for (const [cwd, args, msg] of [

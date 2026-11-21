@@ -29,7 +29,7 @@ const COMMANDS = {
   apps: [c.cmdApps, "apps", "list your apps"],
   artifact: [c.cmdArtifact, "artifact [ls|show|set|open|rm]", "your artifacts (static HTML with who-can-open + expiry)"],
   config: [c.cmdConfig, "config [get|set|unset api <url>]", "CLI settings, e.g. the server (default https://cresslet.dev)"],
-  settings: [c.cmdSettings, "settings [--artifact-visibility|-keep]", "your defaults for new artifacts (--reset: the server's)"],
+  settings: [c.cmdSettings, "settings [options]", "defaults for new artifacts: --artifact-visibility v, --artifact-keep d, --reset"],
 };
 
 const DEPLOY_HELP = `${color.bold("deploy")} picks what to publish:
