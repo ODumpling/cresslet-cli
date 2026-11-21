@@ -920,14 +920,14 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     // Any other folder is still a public app, and says so up front (also with --name).
     const app = await cli(dir, api, "deploy", "static", "--name", "my-static");
     assert.match(app.stderr, /static has no cresslet\.json: it goes live as a public app/);
-    assert.match(app.stdout, /deployed app my-static[\s\S]*cresslet deploy static --artifact, then take this app down: cd static && cresslet delete/);
+    assert.match(app.stdout, /deployed app my-static[\s\S]*cresslet deploy static --artifact --api \S+, then take this app down: cd static && cresslet delete/);
     assert.deepEqual(calls(), [["POST", "/v1/deploys"]]);
 
     // --dir: the hint names the folder that was uploaded; a linked app folder deploys its --dir output from outside it.
     fs.mkdirSync(path.join(dir, "linked/out"), { recursive: true });
     fs.writeFileSync(path.join(dir, "linked/index.html"), "<h1>src</h1>");
     fs.writeFileSync(path.join(dir, "linked/out/index.html"), "<h1>out</h1>");
-    assert.match((await cli(dir, api, "deploy", "linked", "--dir", "linked/out")).stdout, /cresslet deploy linked\/out --artifact, then take this app down: cd linked && cresslet delete/);
+    assert.match((await cli(dir, api, "deploy", "linked", "--dir", "linked/out")).stdout, new RegExp(`cresslet deploy linked/out --artifact --api ${api.url}, then take this app down: cd linked && cresslet delete`));
     fs.rmSync(path.join(dir, "linked/index.html"));
     await cli(dir, api, "deploy", "linked", "--dir", "linked/out");
     assert.equal(api.calls.at(-1).body.app, "quiet-1");
