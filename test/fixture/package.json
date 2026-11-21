@@ -8,6 +8,6 @@
     "deploy": "cresslet deploy"
   },
   "devDependencies": {
-    "@odumpling/cresslet-cli": "github:ODumpling/cresslet-cli"
+    "cresslet": "^0.1.0"
   }
 }
