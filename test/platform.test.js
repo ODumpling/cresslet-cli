@@ -874,6 +874,13 @@ test("auth login: browser approval or --token; auth status / logout", async () =
     assert.equal(config().tokens[api.url], undefined);
     await assert.rejects(noToken(dir, api, "auth", "nope"), (e) => /unknown auth command: nope/.test(e.stderr));
     assert.match((await noToken(dir, api, "auth", "--help")).stdout, /usage: cresslet auth login/);
+    await noToken(dir, api, "auth", "login", "--token=clv_acct_kept");
+    const n = api.calls.length;
+    assert.match((await noToken(dir, api, "auth", "logout", "-h")).stdout, /usage: cresslet auth/);
+    await noToken(dir, api, "auth", "login", "--help");
+    assert.equal(api.calls.length, n); // help only: no login started
+    assert.equal(config().tokens[api.url], "clv_acct_kept"); // nor logged out
+    await assert.rejects(noToken(dir, api, "auth", "--token=x"), (e) => /usage: cresslet auth/.test(e.stderr));
     await noToken(dir, api, "auth", "login", "--token=clv_acct_pasted");
     const before = api.calls.length;
     await assert.rejects(noToken(dir, api, "auth", "login", "--token="), (e) => /usage: cresslet auth login --token/.test(e.stderr));

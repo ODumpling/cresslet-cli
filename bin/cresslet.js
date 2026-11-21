@@ -52,15 +52,15 @@ const AUTH = { login: "login", logout: "logout", status: "whoami" };
 let args = rest;
 let name = cmd;
 if (cmd === "auth") {
+  const usage = "usage: cresslet auth login [--token t] [--no-browser] | logout | status";
+  if (rest.some((a) => a === "--help" || a === "-h")) {
+    console.log(usage);
+    process.exit(0);
+  }
   name = AUTH[rest[0]];
   args = rest.slice(1);
   if (!name) {
-    const usage = "usage: cresslet auth login [--token t] [--no-browser] | logout | status";
-    if (!rest[0] || rest[0].startsWith("-")) {
-      (rest[0] ? console.log : console.error)(usage);
-      process.exit(rest[0] ? 0 : 1);
-    }
-    console.error(color.red(`unknown auth command: ${rest[0]}`));
+    if (rest[0]) console.error(color.red(`unknown auth command: ${rest[0]}`));
     console.error(usage);
     process.exit(1);
   }
