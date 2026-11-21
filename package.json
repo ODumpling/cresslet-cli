@@ -1,8 +1,15 @@
 {
-  "name": "@odumpling/cresslet-cli",
+  "name": "cresslet",
   "version": "0.1.0",
   "description": "CLI for Cresslet: create, run, and deploy small web apps.",
   "license": "MIT",
+  "keywords": [
+    "cresslet",
+    "cli",
+    "deploy",
+    "hosting",
+    "web-apps"
+  ],
   "type": "module",
   "bin": {
     "cresslet": "bin/cresslet.js"
@@ -17,6 +24,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ODumpling/cresslet-cli.git"
+  },
+  "homepage": "https://cresslet.dev",
+  "bugs": {
+    "url": "https://github.com/ODumpling/cresslet-cli/issues"
   },
   "scripts": {
     "test": "node --test test/*.test.js"

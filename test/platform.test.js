@@ -890,3 +890,41 @@ test("auth login: browser approval or --token; auth status / logout", async () =
     await api.close();
   }
 });
+
+test("config: default server is cresslet.dev; set/get/unset api; --api and CRESSLET_API win", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-cfg-"));
+  const { CRESSLET_TOKEN: _t, CRESSLET_API: _a, ...env } = process.env;
+  const cli = (args, extra = {}) => run(process.execPath, [CLI, ...args], {
+    cwd: dir,
+    env: { ...env, CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1", ...extra },
+  });
+  const account = { id: "acct_1", email: "o@x.dev", github: "octo" };
+  const api = await fakeApi({ "GET /v1/me": () => ({ account }) });
+  try {
+    assert.equal((await cli(["config", "get", "api"])).stdout.trim(), "https://cresslet.dev");
+    assert.deepEqual(JSON.parse((await cli(["config", "--json"])).stdout).api, { value: "https://cresslet.dev", from: "default" });
+
+    const set = await cli(["config", "set", "api", api.url + "/"]);
+    assert.match(set.stdout, /api set to http:\/\/127\.0\.0\.1:\d+\n/);
+    assert.match(set.stdout, /not logged in there yet/);
+    assert.deepEqual(JSON.parse((await cli(["config", "get", "api", "--json"])).stdout), { key: "api", value: api.url, from: "config" });
+
+    // commands now use it without --api
+    await cli(["login", "--token=clv_acct_cfg"]);
+    assert.match((await cli(["whoami"])).stdout, new RegExp(`octo \\(o@x\\.dev\\) \\(${api.url.replace(/\./g, "\\.")}\\)`));
+
+    assert.equal((await cli(["config", "get", "api", "--api", "http://flag.test"])).stdout.trim(), "http://flag.test");
+    assert.match((await cli(["config", "get", "api", "--json"], { CRESSLET_API: "http://env.test" })).stdout, /"from": "CRESSLET_API"/);
+    assert.match((await cli(["config", "set", "api", "http://x.test"], { CRESSLET_API: "http://env.test" })).stdout, /CRESSLET_API overrides it here/);
+
+    await assert.rejects(cli(["config", "set", "api", "nope"]), (e) => /not a URL: nope/.test(e.stderr));
+    await assert.rejects(cli(["config", "set", "api", "ftp://x"]), (e) => /not an http\(s\) URL/.test(e.stderr));
+    await assert.rejects(cli(["config", "set", "colour", "red"]), (e) => /unknown config key: colour/.test(e.stderr));
+    await assert.rejects(cli(["config", "frob"]), (e) => /unknown config command: frob/.test(e.stderr));
+
+    assert.match((await cli(["config", "unset", "api"])).stdout, /api reset to https:\/\/cresslet\.dev/);
+    assert.equal((await cli(["config", "get", "api"])).stdout.trim(), "https://cresslet.dev");
+  } finally {
+    await api.close();
+  }
+});

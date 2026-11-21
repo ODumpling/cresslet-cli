@@ -27,6 +27,7 @@ const COMMANDS = {
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
   apps: [c.cmdApps, "apps", "list your apps"],
   page: [c.cmdPage, "page [ls|upload|show|update|set|open|rm]", "static HTML pages: upload <file|dir> [--visibility v] [--keep days|forever]"],
+  config: [c.cmdConfig, "config [get|set|unset api <url>]", "CLI settings, e.g. the server (default https://cresslet.dev)"],
   settings: [c.cmdSettings, "settings [--page-visibility|--page-keep]", "your defaults for new pages (--reset: the server's)"],
 };
 
@@ -35,7 +36,7 @@ function help() {
   console.log("usage: cresslet <command> [options]\n");
   for (const [, usage, desc] of Object.values(COMMANDS)) console.log(`  ${usage.padEnd(42)} ${color.dim(desc)}`);
   console.log(`  ${"auth login|logout|status".padEnd(42)} ${color.dim("same as login, logout, whoami")}`);
-  console.log(`\nglobal: --api <url> (or CRESSLET_API), --json (machine-readable output), --app <name>`);
+  console.log(`\nglobal: --api <url> (or CRESSLET_API, or "cresslet config set api <url>"), --json (machine-readable output), --app <name>`);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);

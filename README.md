@@ -3,13 +3,13 @@
 CLI for [Cresslet](https://github.com/ODumpling/cresslet): create, run and deploy small web apps. Built for humans and coding agents (`--json` everywhere).
 
 ```sh
-npx github:ODumpling/cresslet-cli new my-app     # or: init (current dir)
+npx cresslet new my-app     # or: init (current dir); or install it: npm i -g cresslet
 cd my-app && npm install                       # templates depend on this CLI
 npm run dev                                    # http://localhost:3000, live reload, local SQLite
 npx cresslet deploy                              # prints URL
 ```
 
-Requires Node ≥ 22.13. Server: `CRESSLET_API` / `--api` (default `http://localhost:8787`).
+Requires Node ≥ 22.13. Server: `https://cresslet.dev` by default; change it with `cresslet config set api <url>` (e.g. `http://localhost:8787` for a local server), or per command with `--api <url>` / `CRESSLET_API`.
 
 ## Commands
 
@@ -29,6 +29,7 @@ Requires Node ≥ 22.13. Server: `CRESSLET_API` / `--api` (default `http://local
 | `inspect [app\|url]`, `rollback [deployId]`, `open`, `delete [-y]` | |
 | `page upload <file.html\|dir> [--visibility private\|link\|public] [--keep <days>\|forever] [--title t]` | upload a static page (account login); prints its URL. Settings left out come from your defaults |
 | `page ls \| show <page> \| update <page> <file\|dir> \| set <page> [--visibility v] [--keep d] \| open <page> \| rm <page>` | manage pages (`<page>` = name or URL). `update` keeps the link and restarts the retention clock; `open` signs you in to a private page |
+| `config [list] \| get api \| set api <url> \| unset api` | CLI settings in `~/.config/cresslet/config.json`. `list` shows the server in use and where it comes from (`--api` > `CRESSLET_API` > project link > config > default) |
 | `settings [--page-visibility v] [--page-keep d\|forever] [--reset]` | your defaults for new pages (`--reset`: the server's) |
 | `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `login` / `logout` / `whoami` work too |
 
