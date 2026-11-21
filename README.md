@@ -30,7 +30,7 @@ Requires Node ≥ 22.13. Server: `CRESSLET_API` / `--api` (default `http://local
 | `page upload <file.html\|dir> [--visibility private\|link\|public] [--keep <days>\|forever] [--title t]` | upload a static page (account login); prints its URL. Settings left out come from your defaults |
 | `page ls \| show <page> \| update <page> <file\|dir> \| set <page> [--visibility v] [--keep d] \| open <page> \| rm <page>` | manage pages (`<page>` = name or URL). `update` keeps the link and restarts the retention clock; `open` signs you in to a private page |
 | `settings [--page-visibility v] [--page-keep d\|forever] [--reset]` | your defaults for new pages (`--reset`: the server's) |
-| `login [--token t] [--no-browser]`, `logout`, `whoami`, `claim`, `apps` | accounts. `login` = GitHub device code; `--token` = token from studio Settings |
+| `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `login` / `logout` / `whoami` work too |
 
 Global: `--api <url>`, `--json`, `--app <name>`. Env: `CRESSLET_API`, `CRESSLET_TOKEN`, `CRESSLET_DEPLOY_KEY` (CI).
 
