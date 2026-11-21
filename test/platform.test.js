@@ -877,7 +877,8 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     assert.deepEqual(calls(), [["GET", "/v1/pages/pg-1"], ["PATCH", "/v1/pages/pg-1"], ["PUT", "/v1/pages/pg-1"]], "settings before the new files");
     // A wider visibility only once the new files are live; a narrower one before them.
     await cli(dir, api, "deploy", "notes.html", "--visibility", "public", "--title", "N");
-    assert.deepEqual(api.calls.slice(1).map((c) => [c.method, c.body?.visibility ?? c.body?.title ?? "files"]), [["PATCH", "N"], ["PUT", "files"], ["PATCH", "public"]]);
+    assert.deepEqual(api.calls.slice(1).map((c) => [c.method, c.body?.title ?? c.body?.visibility ?? "files"]), [["PATCH", "N"], ["PUT", "files"], ["PATCH", "public"]]);
+    assert.equal(api.calls[1].body.visibility, "private", "widening: the current visibility first (checks the token may change it)");
     calls();
     await cli(dir, api, "deploy", "notes.html", "--visibility", "link");
     assert.deepEqual(api.calls.slice(1).map((c) => [c.method, c.body?.visibility ?? "files"]), [["PATCH", "link"], ["PUT", "files"]]);
@@ -905,6 +906,11 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     pages["pg-2"].id = "app_someone_else";
     assert.match((await cli(dir, api, "deploy", "notes.html")).stdout, /pg-2 is gone[\s\S]*new address[\s\S]*deployed artifact pg-3 \(new\)/);
     assert.deepEqual(calls(), [["GET", "/v1/pages/pg-2"], ["POST", "/v1/pages"]]);
+    // Another account's (403): gone too, for a linked one; --name sends it to POST (the server says it's taken).
+    routes["GET /v1/pages/theirs"] = () => ({ $status: 403, error: "forbidden", message: "no access" });
+    routes["POST /v1/pages"] = ((post) => (b) => (b.name === "theirs" ? { $status: 409, error: "conflict", message: "name unavailable: theirs" } : post(b)))(routes["POST /v1/pages"]);
+    await assert.rejects(cli(dir, api, "deploy", "notes.html", "--name", "theirs"), (e) => /name unavailable: theirs/.test(e.stderr));
+    calls();
     // Redeploys go to the server it was deployed to, without --api.
     await run(process.execPath, [CLI, "deploy", "notes.html"], {
       cwd: dir, env: { ...process.env, CRESSLET_API: "", CRESSLET_TOKEN: "tok", CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1" },
@@ -921,6 +927,14 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     fs.mkdirSync(path.join(dir, ".git"));
     await cli(dir, api, "deploy", "notes.html");
     assert.match(fs.readFileSync(path.join(dir, ".gitignore"), "utf8"), /^\.cresslet$/m);
+    calls();
+
+    // A folder inside an app project (its build output) isn't an app of its own.
+    fs.mkdirSync(path.join(proj, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(proj, "dist/index.html"), "<h1>built</h1>");
+    await assert.rejects(cli(proj, api, "deploy", "dist"), (e) => /dist is inside the app project \.[\s\S]*cresslet deploy dist --artifact/.test(e.stderr));
+    assert.ok(!api.calls.length);
+    assert.match((await cli(proj, api, "deploy", "dist", "--artifact")).stdout, /deployed artifact pg-\d+ \(new\)/);
     calls();
 
     for (const [cwd, args, msg] of [
