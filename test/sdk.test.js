@@ -176,7 +176,7 @@ test("package exports the SDK (types too); its version is the package's", () => 
   assert.deepEqual(PKG.exports["."], { types: "./sdk/index.d.ts", default: "./sdk/index.js" });
   assert.ok(PKG.files.includes("sdk"));
   assert.equal(sdk.VERSION, PKG.version);
-  assert.deepEqual(Object.keys(sdk).sort(), ["CONTRACT", "CressletError", "VERSION", "app", "db", "files", "secrets"]);
+  assert.deepEqual(Object.keys(sdk).sort(), ["CONTRACT", "CressletError", "VERSION", "app", "db", "files", "kv", "secrets"]);
 });
 
 test("without a runtime, in module scope, or on an older runtime: errors that say so", async () => {

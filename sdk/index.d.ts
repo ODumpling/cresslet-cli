@@ -116,6 +116,26 @@ export interface Secrets {
 /** The app's database. SQL is the provider's own dialect (SQLite). */
 export declare const db: Database;
 /** The app's file storage. */
+export interface KVEntry<T = unknown> {
+  key: string;
+  value: T;
+  /** ms since epoch, or null when it doesn't expire */
+  expiresAt: number | null;
+}
+/** Key → JSON value store with optional TTLs, kept in the app's own database (table `_cresslet_kv`). */
+export interface KV {
+  /** The stored value (JSON round-tripped), or null when missing or expired. */
+  get<T = unknown>(key: string): Promise<T | null>;
+  /** `ttl`: seconds until it expires. */
+  set(key: string, value: unknown, options?: { ttl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+  /** Atomic add (default 1); missing/expired/non-number counts as 0. `ttl` applies when the counter starts (fixed window). */
+  incr(key: string, by?: number, options?: { ttl?: number }): Promise<number>;
+  /** Live entries with this key prefix, in key order (at most `limit`, max 1000). */
+  list<T = unknown>(prefix?: string, options?: { limit?: number }): Promise<KVEntry<T>[]>;
+}
+export declare const kv: KV;
+
 export declare const files: Files;
 /**
  * The app's secrets: `secrets.get("NAME")` (throws if unset), `secrets.optional("NAME")`, or record access
