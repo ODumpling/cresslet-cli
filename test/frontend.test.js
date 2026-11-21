@@ -347,7 +347,11 @@ test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in th
   try {
     const get = async (p) => (await fetch(s.url + p)).text();
     assert.match(await get("/"), /<title>first<\/title>/);
-    fs.writeFileSync(path.join(dir, ".env"), "VITE_GREETING=second\n");
+    // a burst of saves (editors fire several events): setups run one at a time, the last value wins
+    for (const v of ["burst1", "burst2", "second"]) {
+      fs.writeFileSync(path.join(dir, ".env"), `VITE_GREETING=${v}\n`);
+      await new Promise((r) => setTimeout(r, 30));
+    }
     let ok = false;
     for (let i = 0; i < 60 && !ok; i++) {
       await new Promise((r) => setTimeout(r, 100));
@@ -355,6 +359,10 @@ test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in th
       ok = /<title>second<\/title>/.test(page) && (await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"');
     }
     assert.ok(ok, "html and bundle updated");
+    await new Promise((r) => setTimeout(r, 500)); // nothing older lands after it
+    const page = await get("/");
+    assert.match(page, /<title>second<\/title>/);
+    assert.ok((await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"'));
   } finally {
     await s.close();
   }
