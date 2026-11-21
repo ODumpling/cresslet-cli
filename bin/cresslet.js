@@ -55,7 +55,13 @@ if (cmd === "auth") {
   name = AUTH[rest[0]];
   args = rest.slice(1);
   if (!name) {
-    console.error(color.red(rest[0] ? `unknown auth command: ${rest[0]}` : "usage: cresslet auth login|logout|status"));
+    const usage = "usage: cresslet auth login [--token t] [--no-browser] | logout | status";
+    if (!rest[0] || rest[0].startsWith("-")) {
+      (rest[0] ? console.log : console.error)(usage);
+      process.exit(rest[0] ? 0 : 1);
+    }
+    console.error(color.red(`unknown auth command: ${rest[0]}`));
+    console.error(usage);
     process.exit(1);
   }
 }
