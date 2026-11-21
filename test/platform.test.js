@@ -831,3 +831,62 @@ test("page: upload a file or folder with settings, set / update / open / rm; set
     await api.close();
   }
 });
+
+test("auth login: browser approval or --token; auth status / logout", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
+  const { CRESSLET_TOKEN: _, ...env } = process.env;
+  const noToken = (cwd, api, ...args) => run(process.execPath, [CLI, ...args, "--api", api.url], {
+    cwd,
+    env: { ...env, CRESSLET_CONFIG_DIR: path.join(cwd, ".cfg-test"), NO_COLOR: "1" },
+  });
+  let polls = 0;
+  const account = { id: "acct_1", email: "o@x.dev", github: "octo" };
+  const api = await fakeApi({
+    "GET /v1": () => ({ auth: { github: true, cli: true } }),
+    "POST /v1/auth/cli": () => ({
+      deviceCode: "cli_dc",
+      userCode: "BCDF-GHJK",
+      verificationUri: "http://studio.test/#/cli",
+      expiresIn: 60,
+      interval: 0.01,
+    }),
+    "POST /v1/auth/cli/token": () => (++polls < 2 ? { status: "pending" } : { status: "complete", account, token: "clv_acct_new" }),
+    "GET /v1/me": () => ({ account }),
+  });
+  const config = () => JSON.parse(fs.readFileSync(path.join(dir, ".cfg-test", "config.json"), "utf8"));
+  try {
+    const r = await noToken(dir, api, "auth", "login");
+    assert.match(r.stderr, /open http:\/\/studio\.test\/#\/cli and enter BCDF-GHJK\n/);
+    assert.match(r.stdout, /logged in as octo \(o@x\.dev\)/);
+    assert.deepEqual(api.calls.filter((c) => c.path === "/v1/auth/cli/token").map((c) => c.body), [
+      { deviceCode: "cli_dc" },
+      { deviceCode: "cli_dc" },
+    ]);
+    assert.equal(config().tokens[api.url], "clv_acct_new");
+
+    await noToken(dir, api, "auth", "login", "--token=clv_acct_pasted");
+    assert.equal(api.calls.at(-1).headers.authorization, "Bearer clv_acct_pasted");
+    assert.equal(config().tokens[api.url], "clv_acct_pasted");
+
+    assert.match((await noToken(dir, api, "auth", "status")).stdout, /octo \(o@x\.dev\)/);
+    assert.equal(api.calls.at(-1).headers.authorization, "Bearer clv_acct_pasted");
+    await noToken(dir, api, "auth", "logout");
+    assert.equal(config().tokens[api.url], undefined);
+    await assert.rejects(noToken(dir, api, "auth", "nope"), (e) => /unknown auth command: nope/.test(e.stderr));
+    assert.match((await noToken(dir, api, "auth", "--help")).stdout, /usage: cresslet auth login/);
+    await noToken(dir, api, "auth", "login", "--token=clv_acct_kept");
+    const n = api.calls.length;
+    assert.match((await noToken(dir, api, "auth", "logout", "-h")).stdout, /usage: cresslet auth/);
+    await noToken(dir, api, "auth", "login", "--help");
+    assert.equal(api.calls.length, n); // help only: no login started
+    assert.equal(config().tokens[api.url], "clv_acct_kept"); // nor logged out
+    await assert.rejects(noToken(dir, api, "auth", "--token=x"), (e) => /usage: cresslet auth/.test(e.stderr));
+    await noToken(dir, api, "auth", "login", "--token=clv_acct_pasted");
+    const before = api.calls.length;
+    await assert.rejects(noToken(dir, api, "auth", "login", "--token="), (e) => /usage: cresslet auth login --token/.test(e.stderr));
+    assert.equal(api.calls.length, before); // nothing sent, saved token kept
+    assert.equal(config().tokens[api.url], "clv_acct_pasted");
+  } finally {
+    await api.close();
+  }
+});

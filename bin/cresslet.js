@@ -21,7 +21,7 @@ const COMMANDS = {
   rollback: [c.cmdRollback, "rollback [deployId]", "serve a previous deploy"],
   open: [c.cmdOpen, "open", "open the deployed app"],
   delete: [c.cmdDelete, "delete [-y]", "delete the app and its data"],
-  login: [c.cmdLogin, "login [--token t] [--no-browser]", "log in with GitHub, or a token from studio Settings"],
+  login: [c.cmdLogin, "login [--token t] [--no-browser]", "log in in the browser, or with a token from studio Settings"],
   logout: [c.cmdLogout, "logout", "forget the token"],
   whoami: [c.cmdWhoami, "whoami", "show the logged-in account"],
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
@@ -34,6 +34,7 @@ function help() {
   console.log(`${color.bold("cresslet")} ${VERSION} — create, run and deploy small web apps\n`);
   console.log("usage: cresslet <command> [options]\n");
   for (const [, usage, desc] of Object.values(COMMANDS)) console.log(`  ${usage.padEnd(42)} ${color.dim(desc)}`);
+  console.log(`  ${"auth login|logout|status".padEnd(42)} ${color.dim("same as login, logout, whoami")}`);
   console.log(`\nglobal: --api <url> (or CRESSLET_API), --json (machine-readable output), --app <name>`);
 }
 
@@ -46,7 +47,25 @@ if (cmd === "--version" || cmd === "-v") {
   console.log(VERSION);
   process.exit(0);
 }
-const entry = COMMANDS[cmd];
+// `auth login|logout|status`: same as login / logout / whoami.
+const AUTH = { login: "login", logout: "logout", status: "whoami" };
+let args = rest;
+let name = cmd;
+if (cmd === "auth") {
+  const usage = "usage: cresslet auth login [--token t] [--no-browser] | logout | status";
+  if (rest.some((a) => a === "--help" || a === "-h")) {
+    console.log(usage);
+    process.exit(0);
+  }
+  name = AUTH[rest[0]];
+  args = rest.slice(1);
+  if (!name) {
+    if (rest[0]) console.error(color.red(`unknown auth command: ${rest[0]}`));
+    console.error(usage);
+    process.exit(1);
+  }
+}
+const entry = COMMANDS[name];
 if (!entry) {
   console.error(color.red(`unknown command: ${cmd}`));
   help();
@@ -54,7 +73,7 @@ if (!entry) {
 }
 
 try {
-  await entry[0](parseArgs(rest, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset"] }));
+  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);
