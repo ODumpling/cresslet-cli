@@ -140,13 +140,32 @@ export default { async fetch() {
   fs.writeFileSync(path.join(dirs[0], "cresslet.json"), '{"name":"one"}');
   fs.writeFileSync(path.join(dirs[1], "cresslet.json"), '{"name":"two"}');
   const [a, b] = [await dev(loadProject(dirs[0]), { port: 0, log: () => {} }), await dev(loadProject(dirs[1]), { port: 0, log: () => {} })];
+  let bOpen = true;
   try {
     const [ra, rb] = await Promise.all([a, b].map(async (d) => (await fetch(`${d.url}/api/x`)).json()));
     assert.deepEqual([ra, rb], [{ name: "one", n: 1 }, { name: "two", n: 2 }]);
-  } finally {
+    // rebuilding the older one: its new module's top level sees no bindings, not the newer server's
+    fs.writeFileSync(path.join(dirs[0], "server", "index.js"), `import { app } from "cresslet";
+let top;
+try { top = app.name; } catch (e) { top = e.name; }
+export default { fetch: () => Response.json({ top }) };`);
+    let seen;
+    for (let i = 0; i < 50 && !seen?.top; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      seen = await (await fetch(`${a.url}/api/x`)).json();
+    }
+    assert.deepEqual(seen, { top: "CressletError" });
+    fs.writeFileSync(path.join(dirs[0], "server", "index.js"), app("one"));
+    for (let i = 0; i < 50 && seen?.name !== "one"; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      seen = await (await fetch(`${a.url}/api/x`)).json();
+    }
     await b.close();
+    bOpen = false;
     assert.ok(globalThis[KEY], "still installed while one dev server runs");
     assert.deepEqual(await (await fetch(`${a.url}/api/x`)).json(), { name: "one", n: 1 });
+  } finally {
+    if (bOpen) await b.close();
     await a.close();
   }
   assert.equal(globalThis[KEY], undefined);
