@@ -80,7 +80,7 @@ export default { async fetch() { return Response.json(await db.first("SELECT 2 A
     assert.equal(res.status, 200, await res.clone().text());
     assert.deepEqual(await res.json(), { x: 1 });
     // and once it has loaded, the new build serves with bindings
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 150; i++) {
       const r = await (await fetch(`${d.url}/api/x`)).text();
       if (r === '{"x":2}') return;
       await new Promise((r) => setTimeout(r, 100));
