@@ -89,7 +89,7 @@ export interface Database {
    * Tagged template: db.sql`SELECT * FROM todos WHERE id = ${id}`. Values become parameters; a nested db.sql`...` is
    * spliced in (with its parameters). Pass it to query / first / run / batch, or await it for the rows.
    */
-  sql<T = Row>(strings: TemplateStringsArray, ...values: (SQLValue | Query)[]): Query<T>;
+  sql<T = Row>(strings: TemplateStringsArray, ...values: (SQLValue | Query<any>)[]): Query<T>;
   query<T = Row>(query: Query<T>): Promise<T[]>;
   query<T = Row>(sql: string, ...params: SQLValue[]): Promise<T[]>;
   first<T = Row>(query: Query<T>): Promise<T | null>;

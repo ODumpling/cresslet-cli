@@ -46,13 +46,20 @@ const env = (feature) => runtime(feature).env;
 // ---- db
 
 /** A parameterized statement built by db.sql`...`; placeholders are written for the runtime's provider when it runs. */
+// Brand, not instanceof: a query from another copy of the SDK (one a dependency bundled) is still a query.
+const QUERY = Symbol.for("cresslet.query");
+const isQuery = (q) => !!q && q[QUERY] === true;
+
 class Query {
+  get [QUERY]() {
+    return true;
+  }
   constructor(strings, values) {
     // Nested queries (db.sql fragments) are spliced in, their values kept as parameters.
     const s = [strings[0]];
     const v = [];
     values.forEach((value, i) => {
-      if (value instanceof Query) {
+      if (isQuery(value)) {
         s[s.length - 1] += value.strings[0];
         for (let j = 0; j < value.values.length; j++) {
           v.push(value.values[j]);
@@ -87,7 +94,6 @@ class Query {
   }
 }
 
-const isQuery = (q) => q instanceof Query;
 /** (sql, params) for a call: a db.sql query (no extra params), or a SQL string and its params. */
 function statement(feature, q, params) {
   const rt = runtime(feature);
@@ -103,6 +109,7 @@ function sql(strings, ...values) {
   if (!Array.isArray(strings) || !Array.isArray(strings.raw)) {
     throw new CressletError("cresslet: db.sql is a tagged template: db.sql`SELECT * FROM t WHERE id = ${id}`");
   }
+  if (strings.includes(undefined)) throw new CressletError("cresslet: db.sql has an invalid escape sequence in its SQL text");
   return new Query(strings, values);
 }
 
@@ -131,7 +138,12 @@ export const db = Object.freeze({
     const list = statements.map((q, i) => {
       if (isQuery(q)) return q.compile(rt.paramStyle ?? "?");
       if (typeof q === "string") return { sql: q, params: [] };
-      if (q && typeof q.sql === "string") return { sql: q.sql, params: [...(q.params ?? [])] };
+      if (q && typeof q.sql === "string") {
+        if (q.params !== undefined && !Array.isArray(q.params)) {
+          throw new CressletError(`cresslet: db.batch statement ${i + 1}: params must be an array`);
+        }
+        return { sql: q.sql, params: [...(q.params ?? [])] };
+      }
       throw new CressletError(`cresslet: db.batch statement ${i + 1} is not a db.sql query, SQL string or { sql, params }`);
     });
     if (typeof rt.env.db.batch !== "function") {

@@ -137,6 +137,17 @@ test("db.sql: placeholders follow the runtime's style; values are never SQL text
     ["run", "UPDATE t SET a = ? WHERE b = ?", 1, 2],
   ]);
   assert.throws(() => sdk.db.sql("SELECT 1"), /tagged template/);
+  assert.throws(() => sdk.db.sql`SELECT '\unicode'`, /invalid escape/);
+  await withRuntime({ contract: 1, runtime: "sqlite", env }, async () => {
+    await assert.rejects(sdk.db.batch([{ sql: "SELECT ?", params: "abc" }]), /statement 1: params must be an array/);
+    // a query from another copy of the SDK (bundled by a dependency) is still a query
+    const other = await import(`../sdk/index.js?copy=2`);
+    assert.notEqual(other.db, sdk.db);
+    calls.length = 0;
+    await sdk.db.query(sdk.db.sql`SELECT * FROM t WHERE ${other.db.sql`a = ${1}`}`);
+    await sdk.db.run(other.db.sql`DELETE FROM t WHERE id = ${2}`);
+    assert.deepEqual(calls, [["query", "SELECT * FROM t WHERE a = ?", 1], ["run", "DELETE FROM t WHERE id = ?", 2]]);
+  });
 });
 
 test("secrets: live record access, read-only", async () => {
