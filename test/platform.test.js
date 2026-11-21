@@ -1034,5 +1034,84 @@ test("app names are URL-encoded in app command paths", async () => {
     }
   } finally {
     await api.close();
+
+const ENV_SERVER = `export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    let frozen = Object.isFrozen(env.secrets);
+    try { env.secrets.X = "mutated"; } catch { /* strict mode: frozen */ }
+    return Response.json({ path: url.pathname, secrets: env.secrets, frozen, appUrl: env.app.url });
+  },
+  async scheduled(event) { globalThis.lastCron = event.cron; },
+};
+`;
+
+const until = async (check, what) => {
+  for (let i = 0; i < 60; i++) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+};
+
+test("dev: --port 0 gives env.app.url the bound port", async () => {
+  const d = await devWith(ENV_SERVER);
+  try {
+    assert.doesNotMatch(d.url, /:0$/);
+    assert.equal((await (await fetch(d.url + "/api/x")).json()).appUrl, d.url);
+  } finally {
+    await d.close();
+  }
+});
+
+test("dev: editing .env.cresslet updates env.secrets live, still frozen", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "server", "index.ts"), ENV_SERVER);
+  fs.writeFileSync(path.join(dir, ".env.cresslet"), "TOKEN=one\n");
+  const d = await dev(loadProject(dir), { port: 0, log: () => {} });
+  try {
+    const get = async () => (await fetch(d.url + "/api/x")).json();
+    assert.deepEqual(await get(), { path: "/api/x", secrets: { TOKEN: "one" }, frozen: true, appUrl: d.url });
+    fs.writeFileSync(path.join(dir, ".env.cresslet"), "TOKEN=two\nOTHER=3\n");
+    await until(async () => (await get()).secrets.TOKEN === "two", "TOKEN=two");
+    const body = await get();
+    assert.deepEqual(body.secrets, { TOKEN: "two", OTHER: "3" });
+    assert.equal(body.frozen, true);
+  } finally {
+    await d.close();
+  }
+});
+
+test("dev: editing cresslet.json updates routes and crons live; invalid JSON keeps the previous ones", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "server", "index.ts"), ENV_SERVER);
+  const cfg = (c) => fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify(c));
+  cfg({ name: "", routes: ["/api/*"], crons: ["0 * * * *"] });
+  const logs = [];
+  const d = await dev(loadProject(dir), { port: 0, log: (m) => logs.push(m) });
+  const isApi = async (p) => (await fetch(d.url + p)).headers.get("content-type")?.includes("application/json");
+  const cron = async () => {
+    const r = await fetch(d.url + "/__cresslet/scheduled", { method: "POST", headers: { "x-cresslet-dev": "1" } });
+    assert.equal(r.status, 204);
+  };
+  try {
+    assert.equal(await isApi("/hooks/a"), false);
+    cfg({ name: "", routes: ["/api/*", "/hooks/*"], crons: ["*/5 * * * *"] });
+    await until(() => isApi("/hooks/a"), "/hooks/* routed");
+    // the scheduled() export runs in this process (dev imports the bundle), so its global is visible here
+    await cron();
+    assert.equal(globalThis.lastCron, "*/5 * * * *");
+
+    fs.writeFileSync(path.join(dir, "cresslet.json"), '{"routes": ["/api/*"'); // a save caught half-written
+    await until(() => logs.some((l) => /cresslet\.json/.test(l)), "invalid JSON logged");
+    assert.equal(await isApi("/hooks/a"), true, "previous routes kept");
+    await cron();
+    assert.equal(globalThis.lastCron, "*/5 * * * *", "previous crons kept");
+
+    cfg({ name: "", routes: ["/api/*"] });
+    await until(async () => !(await isApi("/hooks/a")), "/hooks/* unrouted");
+    assert.equal((await fetch(d.url + "/__cresslet/scheduled", { method: "POST", headers: { "x-cresslet-dev": "1" } })).status, 400);
+  } finally {
+    await d.close();
   }
 });
