@@ -832,6 +832,86 @@ test("page: upload a file or folder with settings, set / update / open / rm; set
   }
 });
 
+test("deploy: an .html file or --artifact folder becomes an artifact, linked so the next deploy updates it", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-artifacts-"));
+  fs.writeFileSync(path.join(dir, "notes.html"), "<h1>notes</h1>");
+  fs.mkdirSync(path.join(dir, "site"));
+  fs.writeFileSync(path.join(dir, "site/index.html"), "<h1>site</h1>");
+  fs.mkdirSync(path.join(dir, "static"));
+  fs.writeFileSync(path.join(dir, "static/index.html"), "<h1>static</h1>");
+  const proj = copyFixture();
+  const page = (over = {}) => ({ id: "app_1", name: "pg-1", title: "notes", url: "http://pg-1.x", visibility: "private", retentionDays: 30, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...over });
+  const made = new Set();
+  const api = await fakeApi({
+    "POST /v1/pages": (b) => (made.add(b.name), { $status: 201, page: page({ name: b.name ?? "pg-1", title: b.title }) }),
+    "PUT /v1/pages/pg-1": () => ({ page: page() }),
+    "PATCH /v1/pages/pg-1": (b) => ({ page: page({ ...b }) }),
+    "PUT /v1/pages/my-site": () => (made.has("my-site")
+      ? { page: page({ name: "my-site", url: "http://my-site.x" }) }
+      : { $status: 404, error: "not_found", message: "page not found: my-site" }),
+    "POST /v1/deploys": (b) => ({ $status: 201, app: { name: b.app ?? "quiet-1", url: "http://quiet-1.x", claimed: true }, deploy: { id: "dep_1" } }),
+  });
+  const calls = () => api.calls.splice(0).map((c) => [c.method, c.path]);
+  try {
+    // A single .html file: a new artifact, then the same one again (settings changed after the upload).
+    const first = await cli(dir, api, "deploy", "notes.html");
+    assert.match(first.stdout, /deployed artifact pg-1 \(new\)[\s\S]*http:\/\/pg-1\.x[\s\S]*private[\s\S]*share it: .*#\/share\/pg-1/);
+    assert.deepEqual(api.calls.at(-1).body, { title: "notes", html: "<h1>notes</h1>", source: "cli" });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, ".cresslet/artifacts.json"), "utf8")), { "notes.html": { name: "pg-1", api: api.url } });
+    assert.match(fs.readFileSync(path.join(dir, ".gitignore"), "utf8"), /^\.cresslet$/m);
+    calls();
+    const again = JSON.parse((await cli(dir, api, "deploy", "notes.html", "--keep", "3", "--json")).stdout);
+    assert.deepEqual([again.kind, again.created, again.artifact.retentionDays], ["artifact", false, 3]);
+    assert.deepEqual(calls(), [["PUT", "/v1/pages/pg-1"], ["PATCH", "/v1/pages/pg-1"]]);
+
+    // A folder with --artifact and an address of your own: created under it, then updated from inside the folder.
+    assert.match((await cli(dir, api, "deploy", "site", "--artifact", "--name", "my-site")).stdout, /deployed artifact my-site \(new\)/);
+    assert.deepEqual(api.calls.map((c) => [c.method, c.path, c.body?.name]), [["PUT", "/v1/pages/my-site", undefined], ["POST", "/v1/pages", "my-site"]]);
+    assert.deepEqual(api.calls.at(-1).body.files.map((f) => f.path), ["index.html"]);
+    calls();
+    assert.match((await cli(path.join(dir, "site"), api, "deploy")).stdout, /deployed artifact my-site \(updated, same link\)/);
+    assert.deepEqual(calls(), [["PUT", "/v1/pages/my-site"]]);
+    assert.ok(!api.calls.length);
+
+    // Any other folder is still a public app, and says so.
+    const app = await cli(dir, api, "deploy", "static");
+    assert.match(app.stdout, /deployed app quiet-1[\s\S]*public app[\s\S]*cresslet deploy --artifact/);
+    assert.deepEqual(calls(), [["POST", "/v1/deploys"]]);
+
+    for (const [cwd, args, msg] of [
+      [proj, ["--visibility", "link"], /app project \(cresslet\.json\): apps are always public[\s\S]*cresslet deploy dist --visibility/],
+      [dir, ["notes.html", "--dir", "site"], /--dir and --server are for apps/],
+      [dir, ["readme.txt"], /not found: readme\.txt/],
+    ]) await assert.rejects(cli(cwd, api, "deploy", ...args), (e) => msg.test(e.stderr), args.join(" "));
+    const anon = cliEnv({ CRESSLET_TOKEN: "" });
+    await assert.rejects(anon(dir, api, "deploy", "notes.html"), (e) => /artifacts need a login[\s\S]*cresslet login/.test(e.stderr));
+    assert.ok(!api.calls.length, "nothing sent when refused");
+  } finally {
+    await api.close();
+  }
+});
+
+test("artifact upload --name sends the address; page is the old name of artifact", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-artifacts-"));
+  fs.writeFileSync(path.join(dir, "notes.html"), "<h1>notes</h1>");
+  const page = { id: "app_1", name: "q4", title: "notes", url: "http://q4.x", visibility: "link", retentionDays: 7, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14 };
+  const settings = (pages) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
+  const api = await fakeApi({
+    "POST /v1/pages": () => ({ $status: 201, page }),
+    "GET /v1/pages": () => ({ pages: [] }),
+    "PUT /v1/me/settings": (b) => settings(b.pages),
+  });
+  try {
+    await cli(dir, api, "artifact", "upload", "notes.html", "--name", "q4");
+    assert.equal(api.calls.at(-1).body.name, "q4");
+    assert.match((await cli(dir, api, "page", "ls")).stdout, /no artifacts yet \(cresslet deploy/);
+    assert.match((await cli(dir, api, "settings", "--artifact-visibility", "public", "--artifact-keep", "9")).stdout, /new artifacts[\s\S]*public/);
+    assert.deepEqual(api.calls.at(-1).body, { pages: { visibility: "public", retentionDays: 9 } });
+  } finally {
+    await api.close();
+  }
+});
+
 test("auth login: browser approval or --token; auth status / logout", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
   const { CRESSLET_TOKEN: _, ...env } = process.env;

@@ -45,7 +45,7 @@ async function cli(args) {
 }
 
 for (const flag of ["--help", "-h"]) {
-  for (const [cmd, usage] of [["deploy", "deploy [--name n]"], ["delete", "delete [-y]"], ["rollback", "rollback [deployId]"], ["build", "build"], ["login", "login [--token t]"]]) {
+  for (const [cmd, usage] of [["deploy", "deploy [file|dir] [--artifact] [--name n]"], ["delete", "delete [-y]"], ["rollback", "rollback [deployId]"], ["build", "build"], ["login", "login [--token t]"]]) {
     test(`${cmd} ${flag} prints usage and does not run`, async () => {
       const { stdout, calls, files } = await cli([cmd, flag]);
       assert.match(stdout, new RegExp(`^usage: cresslet ${usage.replace(/[[\]]/g, "\\$&")}`));
