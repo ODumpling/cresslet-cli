@@ -1,6 +1,6 @@
 # cresslet-cli
 
-CLI for [Cresslet](https://github.com/ODumpling/cresslet): create, run and deploy small web apps. Built for humans and coding agents (`--json` everywhere).
+SDK and CLI for [Cresslet](https://github.com/ODumpling/cresslet): create, run and deploy small web apps. Built for humans and coding agents (`--json` everywhere).
 
 ```sh
 npx cresslet new my-app     # or: init (current dir); or install it: npm i -g cresslet
@@ -11,12 +11,35 @@ npx cresslet deploy                              # prints URL
 
 Requires Node ≥ 22.13. Server: `https://cresslet.dev` by default; change it with `cresslet config set api <url>` (e.g. `http://localhost:8787` for a local server), or per command with `--api <url>` / `CRESSLET_API`.
 
+## SDK
+
+App server code imports its bindings from this package (bundled into the app; types included):
+
+```ts
+import { db, files, secrets, app } from "cresslet";
+
+export default {
+  async fetch(req: Request) {
+    const todo = await db.first(db.sql`SELECT * FROM todos WHERE id = ${id}`);
+    const key = secrets.get("STRIPE_KEY"); // throws, naming it, if unset; secrets.optional("X") → string | undefined
+    return Response.json({ todo, app: app.name });
+  },
+};
+```
+
+- ``db.sql`...` ``: each `${value}` is a parameter, never SQL text (a nested `db.sql` fragment is spliced in). Pass it to `db.query` (rows), `db.first` (row | null), `db.run` (`{changes, lastInsertRowid}`), or `await` it for the rows. `query/first/run(sql, ...params)` with `?` still work; `db.exec(sql)` runs DDL.
+- `db.batch([...statements])`: one transaction, all or nothing, with no other request's statement in between; one `{rows, changes, lastInsertRowid}` per statement.
+- `files.put/get/delete/list`, `secrets.NAME` / `Object.keys(secrets)`, `app.{id,name,url,deployId}`: as on `env`.
+- Bindings exist once a handler runs: using them at module top level throws a `CressletError` that says so. The `env` argument of `fetch(req, env)` keeps working.
+- Needs a runtime with SDK support (runtime contract 1): `cresslet dev` from this package ≥ 0.2.0, and a Cresslet platform / studio that ships it. On an older one the SDK throws a `CressletError` saying what to update.
+- Types: `Env`, `ScheduledEvent`, `WebSocketPair` and the other runtime globals come with the package, so a project no longer needs `server/cresslet.d.ts` (delete it when you import from `"cresslet"`: its globals would be declared twice).
+
 ## Commands
 
 | | |
 |---|---|
 | `new <dir> [--template react\|vanilla]`, `init`, `templates` | scaffold |
-| `dev [--port 3000]` | esbuild watch, live reload, server handler with local `env.db`/`env.files`, secrets from `.env.cresslet`. WebSockets (`WebSocketPair`) work on server routes; run a cron by hand with `curl -X POST -H 'x-cresslet-dev: 1' 'localhost:3000/__cresslet/scheduled?cron=<expr>'` |
+| `dev [--port 3000]` | esbuild watch, live reload, server handler with local `db`/`files` (node:sqlite; SDK and `env`), secrets from `.env.cresslet`. WebSockets (`WebSocketPair`) work on server routes; run a cron by hand with `curl -X POST -H 'x-cresslet-dev: 1' 'localhost:3000/__cresslet/scheduled?cron=<expr>'` |
 | `build` | client → `dist/`, server → `.cresslet/build/server.js` |
 | `deploy [--name n] [--no-source]` | build + upload, with `crons` from `cresslet.json` and the project source (minus `node_modules/`, `dist/`, `.cresslet/`, `.git/`, `.env.cresslet*`, `.env*.local`, files matching top-level `.gitignore` simple patterns; other `.env*` files keep only single-line `CRESSLET_PUBLIC_*`/`VITE_*` entries, and nothing after the first line that isn't a plain `NAME=value` (a multi-line value), as the server does). Source shares the deploy's file/size limits; if it doesn't fit, the deploy goes without it. First deploy stores the deploy key in `.cresslet/app.json` (gitignored) |
 | `deploy --dir <static> [--server <bundle.js>]` | deploy prebuilt output (any toolchain) |
