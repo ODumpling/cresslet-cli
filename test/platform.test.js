@@ -1113,5 +1113,6 @@ test("dev: editing cresslet.json updates routes and crons live; invalid JSON kee
     assert.equal((await fetch(d.url + "/__cresslet/scheduled", { method: "POST", headers: { "x-cresslet-dev": "1" } })).status, 400);
   } finally {
     await d.close();
+    delete globalThis.lastCron;
   }
 });
