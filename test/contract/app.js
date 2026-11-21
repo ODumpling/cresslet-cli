@@ -94,6 +94,11 @@ const cases = {
     for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s", ";COMMIT", " ; /*x*/ END"]) await rejects(db.batch([sql]), /transaction control/, sql);
     eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "nothing written");
   },
+  "db.batch after a rowid past 2^53": async () => {
+    await db.exec("DROP TABLE IF EXISTS contract_big; CREATE TABLE contract_big (id INTEGER PRIMARY KEY, v TEXT)");
+    await db.run("INSERT INTO contract_big VALUES (9007199254740993, 'big')");
+    eq((await db.batch([db.sql`SELECT v FROM contract_big`]))[0].rows, [{ v: "big" }], "rows");
+  },
   "concurrent batches don't interleave": async () => {
     await db.exec("DROP TABLE IF EXISTS contract_c; CREATE TABLE contract_c (k TEXT PRIMARY KEY, n INTEGER NOT NULL)");
     await db.run("INSERT INTO contract_c VALUES ('x', 0)");

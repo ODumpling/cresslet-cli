@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import WebSocket from "ws";
 import { build } from "../lib/build.js";
 import { dev } from "../lib/dev.js";
 import { loadProject } from "../lib/util.js";
@@ -85,6 +86,45 @@ export default { async fetch() { return Response.json(await db.first("SELECT 2 A
       await new Promise((r) => setTimeout(r, 100));
     }
     assert.fail("the rebuilt module never served");
+  } finally {
+    await d.close();
+  }
+});
+
+test("dev: a streamed response and a WebSocket keep their bindings while a rebuilt module loads", async () => {
+  const v1 = `import { db } from "cresslet";
+export default { async fetch(req) {
+  if (req.headers.get("upgrade") === "websocket") {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.addEventListener("message", async () => server.send(JSON.stringify(await db.first("SELECT 3 AS x"))));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+  return new Response(new ReadableStream({ async pull(c) {
+    await new Promise((r) => setTimeout(r, 400));
+    c.enqueue(new TextEncoder().encode(JSON.stringify(await db.first("SELECT 1 AS x"))));
+    c.close();
+  } }));
+} };`;
+  const v2 = `await new Promise((r) => setTimeout(r, 1500));
+export default { fetch: () => new Response("v2") };`;
+  const dir = project(v1);
+  const d = await dev(loadProject(dir), { port: 0, log: () => {} });
+  try {
+    const ws = new WebSocket(d.url.replace("http", "ws") + "/api/ws");
+    await new Promise((r, j) => ((ws.onopen = r), (ws.onerror = j)));
+    const pending = fetch(`${d.url}/api/x`).then((r) => r.text());
+    await new Promise((r) => setTimeout(r, 50));
+    fs.writeFileSync(path.join(dir, "server", "index.js"), v2);
+    assert.equal(await pending, '{"x":1}', "streamed body");
+    // the new module is still loading: the socket's message listener (old build) runs with its bindings
+    const reply = new Promise((r, j) => {
+      ws.onmessage = (e) => r(e.data);
+      setTimeout(() => j(new Error("no reply from the socket's listener")), 3000);
+    });
+    ws.send("hi");
+    assert.equal(await reply, '{"x":3}');
+    ws.close();
   } finally {
     await d.close();
   }
