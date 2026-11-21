@@ -765,3 +765,69 @@ test("dev: a failed startup while another dev runs restores that instance's WebS
     await a.close();
   }
 });
+
+test("page: upload a file or folder with settings, set / update / open / rm; settings defaults", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-pages-"));
+  fs.writeFileSync(path.join(dir, "notes.html"), "<h1>notes</h1>");
+  fs.mkdirSync(path.join(dir, "site/img"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "site/node_modules"));
+  fs.writeFileSync(path.join(dir, "site/index.html"), "<h1>site</h1>");
+  fs.writeFileSync(path.join(dir, "site/img/a.png"), Buffer.from([137, 80]));
+  fs.writeFileSync(path.join(dir, "site/.env"), "SECRET=1");
+  fs.writeFileSync(path.join(dir, "site/node_modules/x.js"), "x");
+  fs.writeFileSync(path.join(dir, "readme.txt"), "x");
+  fs.mkdirSync(path.join(dir, "noindex"));
+  fs.writeFileSync(path.join(dir, "noindex/a.html"), "x");
+  const page = (over = {}) => ({ id: "app_1", name: "pg-1", title: "notes", url: "http://pg-1.x", visibility: "link", retentionDays: 7, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...over });
+  const settings = (pages) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
+  const api = await fakeApi({
+    "POST /v1/pages": (b) => ({ $status: 201, page: page({ title: b.title }) }),
+    "GET /v1/pages": () => ({ pages: [page(), page({ name: "pg-2", title: null, retentionDays: null, expiresAt: null })] }),
+    "PATCH /v1/pages/pg-1": (b) => ({ page: page({ ...b }) }),
+    "PUT /v1/pages/pg-1": () => ({ page: page() }),
+    "POST /v1/pages/pg-1/view": () => ({ url: "http://pg-1.x/?cresslet_view=pvt_1", expiresIn: 120 }),
+    "DELETE /v1/pages/pg-1": () => ({ deleted: "pg-1" }),
+    "GET /v1/me/settings": () => settings({ visibility: "private", retentionDays: 30 }),
+    "PUT /v1/me/settings": (b) => settings(b.pages ?? { visibility: "private", retentionDays: 30 }),
+  });
+  try {
+    // One file: its text as `html`; settings only when given.
+    assert.match((await cli(dir, api, "page", "upload", "notes.html")).stdout, /uploaded[\s\S]*http:\/\/pg-1\.x[\s\S]*anyone with the link[\s\S]*7 days/);
+    assert.deepEqual(api.calls.at(-1).body, { title: "notes", html: "<h1>notes</h1>", source: "cli" });
+    // A folder: base64 files, hidden files and node_modules left out.
+    await cli(dir, api, "page", "upload", "site", "--visibility", "public", "--keep", "forever", "--title", "Site");
+    const up = api.calls.at(-1).body;
+    assert.equal(up.title, "Site");
+    assert.equal(up.visibility, "public");
+    assert.equal(up.retentionDays, null);
+    assert.deepEqual(up.files.map((f) => f.path).sort(), ["img/a.png", "index.html"]);
+    assert.equal(Buffer.from(up.files.find((f) => f.path === "img/a.png").data, "base64").length, 2);
+    for (const [args, msg] of [
+      [["upload", "readme.txt"], /isn't an \.html file/],
+      [["upload", "noindex"], /has no index\.html/],
+      [["upload", "notes.html", "--visibility", "secret"], /--visibility must be one of/],
+      [["upload", "notes.html", "--keep", "0"], /--keep must be a number of days/],
+      [["set", "pg-1"], /nothing to change/],
+    ]) await assert.rejects(cli(dir, api, "page", ...args), (e) => msg.test(e.stderr), args.join(" "));
+
+    assert.match((await cli(dir, api, "page", "ls")).stdout, /notes\s+link\s+until 2026-12-01\s+http:\/\/pg-1\.x\n.*pg-2\s+link\s+forever/);
+    await cli(dir, api, "page", "set", "http://pg-1.x/", "--visibility", "private", "--keep", "3");
+    assert.deepEqual(api.calls.at(-1).body, { visibility: "private", retentionDays: 3 });
+    await cli(dir, api, "page", "update", "pg-1", "notes.html", "--keep", "30");
+    assert.deepEqual(api.calls.slice(-2).map((c) => [c.method, c.path, c.body]), [
+      ["PUT", "/v1/pages/pg-1", { html: "<h1>notes</h1>", source: "cli" }],
+      ["PATCH", "/v1/pages/pg-1", { retentionDays: 30 }],
+    ]);
+    assert.equal(JSON.parse((await cli(dir, api, "page", "open", "pg-1", "--json")).stdout).url, "http://pg-1.x/?cresslet_view=pvt_1");
+    await cli(dir, api, "page", "rm", "pg-1", "-y");
+    assert.equal(api.calls.at(-1).method, "DELETE");
+
+    assert.match((await cli(dir, api, "settings")).stdout, /private[\s\S]*30 days[\s\S]*server default: private, 30 days/);
+    assert.match((await cli(dir, api, "settings", "--page-visibility", "link", "--page-keep", "forever")).stdout, /anyone with the link[\s\S]*forever/);
+    assert.deepEqual(api.calls.at(-1).body, { pages: { visibility: "link", retentionDays: null } });
+    await cli(dir, api, "settings", "--reset");
+    assert.deepEqual(api.calls.at(-1).body, { pages: null });
+  } finally {
+    await api.close();
+  }
+});
