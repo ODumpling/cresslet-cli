@@ -85,13 +85,13 @@ const cases = {
     );
     eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "rows after rollback");
   },
-  "db.batch refuses transaction control (it is one transaction)": async () => {
+  "db.batch refuses transaction control and PRAGMA (it is one transaction; a PRAGMA isn't rolled back)": async () => {
     await rejects(
       db.batch([db.sql`INSERT INTO contract_b (v) VALUES (${"c"})`, " /* x */ COMMIT", db.sql`INSERT INTO contract_b (v) VALUES (${null})`]),
       /statement 2: transaction control/,
       "COMMIT in a batch",
     );
-    for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s", ";COMMIT", " ; /*x*/ END"]) await rejects(db.batch([sql]), /transaction control/, sql);
+    for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s", ";COMMIT", " ; /*x*/ END", "PRAGMA ignore_check_constraints = ON"]) await rejects(db.batch([sql]), /transaction control/, sql);
     eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "nothing written");
   },
   "db.batch after a rowid past 2^53": async () => {
