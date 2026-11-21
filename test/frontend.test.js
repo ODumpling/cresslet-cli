@@ -353,7 +353,8 @@ test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in th
       await new Promise((r) => setTimeout(r, 30));
     }
     let ok = false;
-    for (let i = 0; i < 60 && !ok; i++) {
+    // up to 15 s: other test files (test/sdk.test.js's dev servers) run alongside and slow the rebuilds
+    for (let i = 0; i < 150 && !ok; i++) {
       await new Promise((r) => setTimeout(r, 100));
       const page = await get("/");
       ok = /<title>second<\/title>/.test(page) && (await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"');
