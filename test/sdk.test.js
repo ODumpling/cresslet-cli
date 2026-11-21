@@ -59,6 +59,37 @@ test("contract cases pass on cresslet dev", async () => {
   assert.equal(globalThis[KEY], undefined, "dev's runtime removed on close");
 });
 
+test("dev: a request on the previous build keeps its bindings while a rebuilt module loads", async () => {
+  const v1 = `import { db } from "cresslet";
+export default { async fetch() {
+  await new Promise((r) => setTimeout(r, 400));
+  return Response.json(await db.first("SELECT 1 AS x"));
+} };`;
+  // the new module stays loading (top-level await) for a second: the in-flight request wakes up meanwhile
+  const v2 = `import { db } from "cresslet";
+await new Promise((r) => setTimeout(r, 1500));
+export default { async fetch() { return Response.json(await db.first("SELECT 2 AS x")); } };`;
+  const dir = project(v1);
+  const d = await dev(loadProject(dir), { port: 0, log: () => {} });
+  try {
+    const pending = fetch(`${d.url}/api/x`);
+    await new Promise((r) => setTimeout(r, 50));
+    fs.writeFileSync(path.join(dir, "server", "index.js"), v2);
+    const res = await pending;
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(await res.json(), { x: 1 });
+    // and once it has loaded, the new build serves with bindings
+    for (let i = 0; i < 50; i++) {
+      const r = await (await fetch(`${d.url}/api/x`)).text();
+      if (r === '{"x":2}') return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail("the rebuilt module never served");
+  } finally {
+    await d.close();
+  }
+});
+
 test("package exports the SDK (types too); its version is the package's", () => {
   assert.deepEqual(PKG.exports["."], { types: "./sdk/index.d.ts", default: "./sdk/index.js" });
   assert.ok(PKG.files.includes("sdk"));

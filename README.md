@@ -20,6 +20,7 @@ import { db, files, secrets, app } from "cresslet";
 
 export default {
   async fetch(req: Request) {
+    const id = Number(new URL(req.url).searchParams.get("id"));
     const todo = await db.first(db.sql`SELECT * FROM todos WHERE id = ${id}`);
     const key = secrets.get("STRIPE_KEY"); // throws, naming it, if unset; secrets.optional("X") → string | undefined
     return Response.json({ todo, app: app.name });

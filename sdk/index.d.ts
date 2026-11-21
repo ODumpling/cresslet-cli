@@ -8,6 +8,7 @@ export type Row = Record<string, unknown>;
 
 export interface RunResult {
   changes: number;
+  /** SQLite's last_insert_rowid(). For portable code, use `INSERT ... RETURNING id` with db.first instead. */
   lastInsertRowid: number;
 }
 /** One statement's result in db.batch: its rows (if it returns any), and the rows it changed. */

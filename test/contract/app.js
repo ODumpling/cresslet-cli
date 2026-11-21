@@ -85,6 +85,15 @@ const cases = {
     );
     eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "rows after rollback");
   },
+  "db.batch refuses transaction control (it is one transaction)": async () => {
+    await rejects(
+      db.batch([db.sql`INSERT INTO contract_b (v) VALUES (${"c"})`, " /* x */ COMMIT", db.sql`INSERT INTO contract_b (v) VALUES (${null})`]),
+      /statement 2: transaction control/,
+      "COMMIT in a batch",
+    );
+    for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s"]) await rejects(db.batch([sql]), /transaction control/, sql);
+    eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "nothing written");
+  },
   "concurrent batches don't interleave": async () => {
     await db.exec("DROP TABLE IF EXISTS contract_c; CREATE TABLE contract_c (k TEXT PRIMARY KEY, n INTEGER NOT NULL)");
     await db.run("INSERT INTO contract_c VALUES ('x', 0)");
