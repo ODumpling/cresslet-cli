@@ -952,6 +952,10 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     });
     assert.match(r.stdout, /deployed artifact pg-\d+ \(new\)/);
     calls();
+    // An enclosing cresslet.json that doesn't parse doesn't stop an artifact.
+    fs.writeFileSync(path.join(proj, "cresslet.json"), "{oops");
+    assert.match((await cli(proj, api, "deploy", "dist", "--artifact")).stdout, /deployed artifact/);
+    calls();
 
     for (const [cwd, args, msg] of [
       [proj, ["--visibility", "link"], /app project \(cresslet\.json\): apps are always public[\s\S]*cresslet deploy dist --visibility/],
