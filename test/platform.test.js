@@ -1034,6 +1034,8 @@ test("app names are URL-encoded in app command paths", async () => {
     }
   } finally {
     await api.close();
+  }
+});
 
 const ENV_SERVER = `export default {
   async fetch(req, env) {
