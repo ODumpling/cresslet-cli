@@ -256,6 +256,26 @@ test("build: root-relative ?raw / ?url, two @source globs under one directory, N
   assert.match(js, /"\/assets\/logo-[A-Z0-9]+\.svg"/);
 });
 
+test("build: an https ?url import stays external; compiler warnings are printed", async () => {
+  const dir = project({
+    "package.json": JSON.stringify({ name: "x", type: "module", devDependencies: { postcss: "^8" } }),
+    "postcss.config.cjs": 'module.exports = { plugins: [{ postcssPlugin: "w", Once(root, { result }) { result.warn("careful now") } }] }\n',
+    "index.html": html('<link rel="stylesheet" href="/src/a.css">', '<script type="module" src="/src/main.js"></script>'),
+    "src/a.css": ".a { color: red }\n",
+    "src/main.js": 'import u from "https://cdn.example.com/x.js?url";\nwindow.u = u;\n',
+  });
+  const warned = [];
+  const orig = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  try {
+    await build(dir);
+  } finally {
+    console.warn = orig;
+  }
+  assert.ok(outputs(dir, ".js").includes("https://cdn.example.com/x.js?url"));
+  assert.match(warned.join("\n"), /client build warnings:[\s\S]*careful now/);
+});
+
 test("build: compile errors name the file and line; a missing compiler says what to install", async () => {
   const bad = project({
     "package.json": pkg({ svelte: "^5" }),
@@ -311,6 +331,30 @@ test("dev: Tailwind classes added to a source (even a new file) rebuild the styl
       ok = (await css()).includes("bg-lime-400");
     }
     assert.ok(ok, "new class picked up");
+  } finally {
+    await s.close();
+  }
+});
+
+test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in the bundle", async () => {
+  const dir = project({
+    "package.json": pkg({}),
+    ".env": "VITE_GREETING=first\n",
+    "index.html": html("<title>%VITE_GREETING%</title>", '<script type="module" src="/src/main.js"></script>'),
+    "src/main.js": "window.g = import.meta.env.VITE_GREETING;\n",
+  }, { modules: false });
+  const s = await dev({ root: dir, config: {} }, { port: 0, log: () => {} });
+  try {
+    const get = async (p) => (await fetch(s.url + p)).text();
+    assert.match(await get("/"), /<title>first<\/title>/);
+    fs.writeFileSync(path.join(dir, ".env"), "VITE_GREETING=second\n");
+    let ok = false;
+    for (let i = 0; i < 60 && !ok; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const page = await get("/");
+      ok = /<title>second<\/title>/.test(page) && (await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"');
+    }
+    assert.ok(ok, "html and bundle updated");
   } finally {
     await s.close();
   }
