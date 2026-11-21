@@ -928,3 +928,23 @@ test("config: default server is cresslet.dev; set/get/unset api; --api and CRESS
     await api.close();
   }
 });
+
+test("new against a non-default server records it in the project, so deploy goes there", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-new-"));
+  const { CRESSLET_TOKEN: _t, CRESSLET_API: _a, ...env } = process.env;
+  const cli = (cwd, args) => run(process.execPath, [CLI, ...args], {
+    cwd,
+    env: { ...env, CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1" },
+  });
+  const api = await fakeApi({
+    "GET /v1/templates/vanilla": () => ({ files: [{ path: "cresslet.json", data: "{}" }, { path: "index.html", data: "<h1>hi</h1>" }] }),
+  });
+  try {
+    await cli(dir, ["new", "my-app", "--template", "vanilla", "--api", api.url]);
+    const app = path.join(dir, "my-app");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(app, ".cresslet", "app.json"), "utf8")).api, api.url);
+    assert.deepEqual(JSON.parse((await cli(app, ["config", "get", "api", "--json"])).stdout), { key: "api", value: api.url, from: ".cresslet/app.json" });
+  } finally {
+    await api.close();
+  }
+});
