@@ -11,7 +11,7 @@ const COMMANDS = {
   templates: [c.cmdTemplates, "templates", "list templates"],
   dev: [c.cmdDev, "dev [--port 3000]", "run locally with live reload"],
   build: [c.cmdBuild, "build", "production build (dist/ + .cresslet/build/server.js)"],
-  deploy: [c.cmdDeploy, "deploy [--name n] [--dir d --server f]", "build and deploy (+ source); prints the URL"],
+  deploy: [c.cmdDeploy, "deploy [file|dir] [--artifact] [--name n]", "deploy an app, or a file or folder as an artifact"],
   pull: [c.cmdPull, "pull [app|url] [--dir d] [--deploy id]", "download a deploy's source"],
   logs: [c.cmdLogs, "logs [app|url] [-f] [-n 100]", "show server + request logs"],
   db: [c.cmdDb, "db [sql]", "inspect the deployed database (read-only)"],
@@ -27,16 +27,24 @@ const COMMANDS = {
   whoami: [c.cmdWhoami, "whoami", "show the logged-in account"],
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
   apps: [c.cmdApps, "apps", "list your apps"],
-  page: [c.cmdPage, "page [ls|upload|show|update|set|open|rm]", "static HTML pages: upload <file|dir> [--visibility v] [--keep days|forever]"],
+  artifact: [c.cmdArtifact, "artifact [ls|show|set|open|rm]", "your artifacts (static HTML with who-can-open + expiry)"],
   config: [c.cmdConfig, "config [get|set|unset api <url>]", "CLI settings, e.g. the server (default https://cresslet.dev)"],
-  settings: [c.cmdSettings, "settings [--page-visibility|--page-keep]", "your defaults for new pages (--reset: the server's)"],
+  settings: [c.cmdSettings, "settings [options]", "defaults for new artifacts: --artifact-visibility v, --artifact-keep d, --reset"],
 };
+
+const DEPLOY_HELP = `${color.bold("deploy")} picks what to publish:
+  app       a project (cresslet.json), or any other folder: public, with rollback; --dir <out> [--server <bundle.js>]
+            deploys prebuilt output
+  artifact  a single .html file, or a folder with --artifact: who can open it (--visibility private|link|public,
+            default private unless changed in \`cresslet settings\`), how long it's kept (--keep <days>|forever), --title t
+  Deploying the same file or folder again updates the same URL. --name <address> picks the address.`;
 
 function help() {
   console.log(`${color.bold("cresslet")} ${VERSION} — create, run and deploy small web apps\n`);
   console.log("usage: cresslet <command> [options]\n");
   for (const [, usage, desc] of Object.values(COMMANDS)) console.log(`  ${usage.padEnd(42)} ${color.dim(desc)}`);
   console.log(`  ${"auth login|logout|status".padEnd(42)} ${color.dim("same as login, logout, whoami")}`);
+  console.log(`\n${DEPLOY_HELP}`);
   console.log(`\nglobal: --api <url> (or CRESSLET_API, or "cresslet config set api <url>"), --json (machine-readable output), --app <name>`);
 }
 
@@ -70,6 +78,7 @@ if (cmd === "auth") {
     process.exit(1);
   }
 }
+if (name === "page") name = "artifact"; // artifacts were called pages
 const entry = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
 if (!entry) {
   console.error(color.red(`unknown command: ${cmd}`));
@@ -78,11 +87,12 @@ if (!entry) {
 }
 if (wantsHelp) {
   console.log(`usage: cresslet ${entry[1]}\n\n  ${entry[2]}`);
+  if (name === "deploy") console.log(`\n${DEPLOY_HELP}`);
   process.exit(0);
 }
 
 try {
-  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset"] }));
+  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);

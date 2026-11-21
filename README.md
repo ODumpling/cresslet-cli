@@ -9,6 +9,15 @@ npm run dev                                    # http://localhost:3000, live rel
 npx cresslet deploy                              # prints URL
 ```
 
+Just want to share an HTML file or a static folder? Log in once and deploy it as an **artifact**: private unless you say otherwise, kept for 30 days by default, same URL every time you deploy it again.
+
+```sh
+npx cresslet login
+npx cresslet deploy report.html --name q4-report --visibility link   # → https://q4-report.cresslet.dev
+npx cresslet deploy report.html                                       # updated, same link
+npx cresslet deploy ./slides --artifact                               # a folder with an index.html
+```
+
 Requires Node ≥ 22.13. Server: `https://cresslet.dev` by default; change it with `cresslet config set api <url>` (e.g. `http://localhost:8787` for a local server), or per command with `--api <url>` / `CRESSLET_API`.
 
 ## SDK
@@ -44,6 +53,7 @@ export default {
 | `build` | client → `dist/`, server → `.cresslet/build/server.js` |
 | `deploy [--name n] [--no-source]` | build + upload, with `crons` from `cresslet.json` and the project source (minus `node_modules/`, `dist/`, `.cresslet/`, `.git/`, `.env.cresslet*`, `.env*.local`, files matching top-level `.gitignore` simple patterns; other `.env*` files keep only single-line `CRESSLET_PUBLIC_*`/`VITE_*` entries, and nothing after the first line that isn't a plain `NAME=value` (a multi-line value), as the server does). Source shares the deploy's file/size limits; if it doesn't fit, the deploy goes without it. First deploy stores the deploy key in `.cresslet/app.json` (gitignored) |
 | `deploy --dir <static> [--server <bundle.js>]` | deploy prebuilt output (any toolchain) |
+| `deploy <file.html> \| deploy <dir> --artifact [--name n] [--visibility private\|link\|public] [--keep <days>\|forever] [--title t]` | deploy an **artifact** (account login): a single HTML file, or a folder with an `index.html` (hidden files and `node_modules/` left out). A folder without `cresslet.json` is a public app unless you pass `--artifact` (or `--visibility` / `--keep` / `--title`). The link to it is kept in `.cresslet/artifacts.json` next to the file or folder (outside the folder, so a rebuilt `dist/` keeps it; gitignored inside a git repo), so deploying it again updates the same URL (if it expired, you get a new one); `--name` picks the address (yours, or a new one). Settings left out come from your defaults |
 | `pull [app\|url] [--dir d] [--deploy id] [--force]` | download the source of the current (or given) deploy into `./<app>` and link it |
 | `logs [app\|url] [-f] [-n N]` | server stdout/stderr, request log, system events |
 | `db [sql]` | dump tables or run read-only SQL |
@@ -51,10 +61,9 @@ export default {
 | `domains [add \| verify \| rm <domain>]` | custom domains (claimed apps). `add` prints the CNAME + TXT records to create, then `verify` |
 | `egress [allow <host…> \| clear]` | outbound `fetch` allowlist (claimed apps). `allow` sets the whole list (`*.` = subdomains); `clear` = any public host |
 | `inspect [app\|url]`, `rollback [deployId]`, `open`, `delete [-y]` | |
-| `page upload <file.html\|dir> [--visibility private\|link\|public] [--keep <days>\|forever] [--title t]` | upload a static page (account login); prints its URL. Settings left out come from your defaults |
-| `page ls \| show <page> \| update <page> <file\|dir> \| set <page> [--visibility v] [--keep d] \| open <page> \| rm <page>` | manage pages (`<page>` = name or URL). `update` keeps the link and restarts the retention clock; `open` signs you in to a private page |
+| `artifact ls \| show <a> \| set <a> [--visibility v] [--keep d] [--title t] \| open <a> \| rm <a>` | manage artifacts (`<a>` = name or URL). `open` signs you in to a private one. `artifact upload <file\|dir> [--name n]` always makes a new one; `artifact update <a> <file\|dir>` replaces one's files (same link, retention clock restarts). `page …` (their old name) works too |
 | `config [list] \| get api \| set api <url> \| unset api` | CLI settings in `~/.config/cresslet/config.json`. `list` shows the server in use and where it comes from (`--api` > `CRESSLET_API` > project link > config > default) |
-| `settings [--page-visibility v] [--page-keep d\|forever] [--reset]` | your defaults for new pages (`--reset`: the server's) |
+| `settings [--artifact-visibility v] [--artifact-keep d\|forever] [--reset]` | your defaults for new artifacts (`--reset`: the server's; `--page-*` works too) |
 | `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `login` / `logout` / `whoami` work too |
 
 Global: `--api <url>`, `--json`, `--app <name>`. Env: `CRESSLET_API`, `CRESSLET_TOKEN`, `CRESSLET_DEPLOY_KEY` (CI).
