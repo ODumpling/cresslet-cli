@@ -35,5 +35,13 @@
   "dependencies": {
     "esbuild": "^0.28.2",
     "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "less": "^4.9.1",
+    "postcss": "^8.5.33",
+    "sass": "^1.108.2",
+    "svelte": "^5.59.1",
+    "tailwindcss": "^4.3.5",
+    "vue": "^3.5.46"
   }
 }
