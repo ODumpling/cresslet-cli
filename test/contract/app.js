@@ -91,7 +91,7 @@ const cases = {
       /statement 2: transaction control/,
       "COMMIT in a batch",
     );
-    for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s"]) await rejects(db.batch([sql]), /transaction control/, sql);
+    for (const sql of ["BEGIN", "end", "ROLLBACK", "SAVEPOINT s", "RELEASE s", ";COMMIT", " ; /*x*/ END"]) await rejects(db.batch([sql]), /transaction control/, sql);
     eq(await db.query("SELECT v FROM contract_b ORDER BY id"), [{ v: "a!" }, { v: "b!" }], "nothing written");
   },
   "concurrent batches don't interleave": async () => {
