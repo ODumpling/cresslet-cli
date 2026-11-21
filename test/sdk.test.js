@@ -148,13 +148,14 @@ export default { async fetch() {
     fs.writeFileSync(path.join(dirs[0], "server", "index.js"), `import { app } from "cresslet";
 let top;
 try { top = app.name; } catch (e) { top = e.name; }
-export default { fetch: () => Response.json({ top }) };`);
+const name = () => { try { return app.name; } catch (e) { return e.name; } };
+export default { get fetch() { const got = name(); return () => Response.json({ top, getter: got }); } };`);
     let seen;
     for (let i = 0; i < 50 && !seen?.top; i++) {
       await new Promise((r) => setTimeout(r, 100));
       seen = await (await fetch(`${a.url}/api/x`)).json();
     }
-    assert.deepEqual(seen, { top: "CressletError" });
+    assert.deepEqual(seen, { top: "CressletError", getter: "CressletError" }); // reading the export: no bindings either
     fs.writeFileSync(path.join(dirs[0], "server", "index.js"), app("one"));
     for (let i = 0; i < 50 && seen?.name !== "one"; i++) {
       await new Promise((r) => setTimeout(r, 100));
@@ -240,6 +241,8 @@ test("secrets: live record access, read-only", async () => {
     assert.equal(sdk.secrets.get("B"), "2");
     assert.equal(sdk.secrets.A, undefined);
     assert.throws(() => (sdk.secrets.B = "x"), TypeError);
+    assert.throws(() => Object.freeze(sdk.secrets), TypeError);
+    assert.deepEqual(Object.keys(sdk.secrets), ["B"]); // still works after a failed freeze
   });
 });
 

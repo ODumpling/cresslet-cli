@@ -198,6 +198,7 @@ export const secrets = new Proxy(Object.create(null), {
   set: () => false,
   defineProperty: () => false,
   deleteProperty: () => false,
+  preventExtensions: () => false, // Object.freeze(secrets) throws instead of breaking the proxy's other traps
 });
 
 // ---- app

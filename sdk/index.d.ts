@@ -100,7 +100,8 @@ export interface Database {
   exec(sql: string): Promise<void>;
   /**
    * Runs the statements in one transaction: all of them or (if one fails) none, with no other request's statement in
-   * between. One result per statement, in order.
+   * between. One result per statement, in order. Each item is a single statement (SQL after its first statement isn't run); no BEGIN/COMMIT/
+   * SAVEPOINT inside.
    */
   batch(statements: (Query<any> | string | Statement)[]): Promise<BatchResult[]>;
 }
