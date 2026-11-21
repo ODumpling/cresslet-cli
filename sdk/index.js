@@ -6,10 +6,10 @@
 // each addition to the env the SDK relies on; FEATURES says which contract each part of the SDK needs, so a new SDK on
 // an older runtime fails with a message saying what to update. Keep in sync with docs/app-format.md (cresslet repo).
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const KEY = Symbol.for("cresslet.runtime");
 /** Runtime contract each SDK feature needs. 1: env published for the SDK, db.batch, paramStyle. */
-const FEATURES = { db: 1, "db.batch": 1, files: 1, secrets: 1, app: 1 };
+const FEATURES = { db: 1, "db.batch": 1, kv: 1, files: 1, secrets: 1, app: 1 };
 const CONTRACT = Math.max(...Object.values(FEATURES));
 
 class CressletError extends Error {
@@ -150,6 +150,104 @@ export const db = Object.freeze({
       throw new CressletError(`cresslet: db.batch isn't supported by this runtime (${rt.runtime ?? "unknown"}); update it`);
     }
     return rt.env.db.batch(list);
+  },
+});
+
+// ---- kv: keys → JSON values with an optional TTL, kept in the app's own database (table _cresslet_kv), so it needs
+// nothing from the runtime beyond db (contract 1) and lives, is backed up and is rolled back with the app's data.
+
+const KV_TABLE = "_cresslet_kv";
+const kvSchema = new WeakMap(); // env.db → Promise (once per runtime env)
+const kvKey = (key) => {
+  if (typeof key !== "string" || key === "" || key.length > 512) {
+    throw new CressletError("cresslet: kv keys are non-empty strings of up to 512 characters");
+  }
+  return key;
+};
+const kvTtl = (opts) => {
+  const ttl = opts?.ttl;
+  if (ttl === undefined || ttl === null) return null;
+  if (typeof ttl !== "number" || !(ttl > 0) || !Number.isFinite(ttl)) throw new CressletError("cresslet: kv ttl is a number of seconds > 0");
+  return Date.now() + Math.round(ttl * 1000);
+};
+async function kvDb(feature) {
+  const e = env(feature);
+  let ready = kvSchema.get(e.db);
+  if (!ready) {
+    ready = e.db.exec(
+      `CREATE TABLE IF NOT EXISTS ${KV_TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at INTEGER);
+       CREATE INDEX IF NOT EXISTS ${KV_TABLE}_expires ON ${KV_TABLE} (expires_at)`,
+    );
+    kvSchema.set(e.db, ready);
+    ready.catch(() => kvSchema.delete(e.db));
+  }
+  await ready;
+  return db;
+}
+const live = (now) => sql`(expires_at IS NULL OR expires_at > ${now})`;
+// Each write also drops a few expired entries, so they don't pile up.
+const sweep = (now) =>
+  sql`DELETE FROM _cresslet_kv WHERE key IN (SELECT key FROM _cresslet_kv WHERE expires_at <= ${now} LIMIT 20)`;
+
+export const kv = Object.freeze({
+  /** The value stored under `key` (as set: JSON round-tripped), or null when missing or expired. */
+  async get(key) {
+    const d = await kvDb("kv.get");
+    const row = await d.first(sql`SELECT value FROM _cresslet_kv WHERE key = ${kvKey(key)} AND ${live(Date.now())}`);
+    return row ? JSON.parse(row.value) : null;
+  },
+  /** Stores a JSON-serializable value; `{ ttl }` (seconds) makes it expire. */
+  async set(key, value, opts) {
+    const k = kvKey(key);
+    const text = JSON.stringify(value);
+    if (text === undefined) throw new CressletError("cresslet: kv.set value must be JSON-serializable (not undefined)");
+    const expires = kvTtl(opts);
+    const d = await kvDb("kv.set");
+    await d.batch([
+      sql`INSERT INTO _cresslet_kv (key, value, expires_at) VALUES (${k}, ${text}, ${expires})
+          ON CONFLICT (key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
+      sweep(Date.now()),
+    ]);
+  },
+  /** Removes `key` (no error when it isn't there). */
+  async delete(key) {
+    const d = await kvDb("kv.delete");
+    await d.run(sql`DELETE FROM _cresslet_kv WHERE key = ${kvKey(key)}`);
+  },
+  /**
+   * Adds `by` (default 1) to the number under `key` atomically and returns the result; a missing, expired or
+   * non-number value counts as 0. `{ ttl }` applies when the counter starts (a fixed window: rate limits).
+   */
+  async incr(key, by = 1, opts) {
+    if (typeof by !== "number" || !Number.isFinite(by)) throw new CressletError("cresslet: kv.incr amount must be a finite number");
+    const k = kvKey(key);
+    const now = Date.now();
+    const expires = kvTtl(opts);
+    // the platform binds JS numbers as REAL: keep whole-number counters INTEGER
+    const step = Number.isInteger(by) ? sql`CAST(${by} AS INTEGER)` : sql`${by}`;
+    const d = await kvDb("kv.incr");
+    const [res] = await d.batch([
+      sql`INSERT INTO _cresslet_kv (key, value, expires_at) VALUES (${k}, ${JSON.stringify(by)}, ${expires})
+          ON CONFLICT (key) DO UPDATE SET
+            value = CASE WHEN expires_at <= ${now} OR json_valid(value) = 0 OR json_type(value) NOT IN ('integer', 'real')
+                         THEN excluded.value ELSE CAST(value AS NUMERIC) + ${step} END,
+            expires_at = CASE WHEN expires_at <= ${now} THEN excluded.expires_at ELSE expires_at END
+          RETURNING value`,
+      sweep(now),
+    ]);
+    return Number(res.rows[0].value);
+  },
+  /** Live entries whose key starts with `prefix`, in key order: `{ key, value, expiresAt }[]` (at most `limit`, 1000). */
+  async list(prefix = "", { limit = 1000 } = {}) {
+    if (typeof prefix !== "string") throw new CressletError("cresslet: kv.list prefix must be a string");
+    const n = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 1000)));
+    const d = await kvDb("kv.list");
+    const like = prefix.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+    const rows = await d.query(
+      sql`SELECT key, value, expires_at FROM _cresslet_kv WHERE key LIKE ${like} ESCAPE '\\' AND ${live(Date.now())}
+          ORDER BY key LIMIT ${n}`,
+    );
+    return rows.map((r) => ({ key: r.key, value: JSON.parse(r.value), expiresAt: r.expires_at ?? null }));
   },
 });
 

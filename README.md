@@ -25,7 +25,7 @@ Requires Node ≥ 22.13. Server: `https://cresslet.dev` by default; change it wi
 App server code imports its bindings from this package (bundled into the app; types included):
 
 ```ts
-import { db, files, secrets, app } from "cresslet";
+import { db, kv, files, secrets, app } from "cresslet";
 
 export default {
   async fetch(req: Request) {
@@ -39,18 +39,41 @@ export default {
 
 - ``db.sql`...` ``: each `${value}` is a parameter, never SQL text (a nested `db.sql` fragment is spliced in). Pass it to `db.query` (rows), `db.first` (row | null), `db.run` (`{changes, lastInsertRowid}`), or `await` it for the rows. `query/first/run(sql, ...params)` with `?` still work; `db.exec(sql)` runs DDL.
 - `db.batch([...statements])`: one transaction, all or nothing, with no other request's statement in between; one `{rows, changes, lastInsertRowid}` per statement.
+- `kv` (0.3.0): JSON values by key with optional TTL, kept in the app's own database (table `_cresslet_kv`; nothing new needed from the runtime). `kv.get(key)` → value | null, `kv.set(key, value, { ttl })` (seconds), `kv.delete(key)`, `kv.incr(key, by = 1, { ttl })` (atomic; ttl starts the window: rate limits), `kv.list(prefix, { limit })` → `{key, value, expiresAt}[]`.
 - `files.put/get/delete/list`, `secrets.NAME` / `Object.keys(secrets)`, `app.{id,name,url,deployId}`: as on `env`.
 - Bindings exist once a handler runs: using them at module top level throws a `CressletError` that says so. The `env` argument of `fetch(req, env)` keeps working.
 - Needs a runtime with SDK support (runtime contract 1): `cresslet dev` from this package ≥ 0.2.0, and a Cresslet platform / studio that ships it. On an older one the SDK throws a `CressletError` saying what to update.
 - Types: `Env`, `ScheduledEvent`, `WebSocketPair` and the other runtime globals come with the package, so a project no longer needs `server/cresslet.d.ts` (delete it when you import from `"cresslet"`: its globals would be declared twice).
 
+## Framework apps (Vite: TanStack Start, …)
+
+A project can use its framework's own build instead of `index.html` + `server/index.ts` (template: `tanstack-start`):
+
+```jsonc
+// cresslet.json
+{
+  "routes": ["/*", "!/assets/*", "!/favicon.svg"], // SSR everywhere except built assets and public files
+  "build": { "command": "vite build", "static": "dist/client", "server": "dist/server/server.js", "dev": "vite dev" }
+}
+```
+
+`build`/`deploy` run `command` (with `node_modules/.bin` on PATH, `NODE_ENV=production`), serve `static` as-is (minus `.env*`, `.cresslet/`, `.git/`, `node_modules/`), and bundle `server` (a module with `export default { fetch }`) and everything it imports into one `.cresslet/build/server.js`. `dev` runs the `dev` command (`--port` is passed on). Routes starting with `!` exclude paths from the server (needs a server with route exclusions).
+
+For `vite dev`, `cresslet/vite` provides the bindings to server code in Vite's SSR process (same local data as `cresslet dev`, `.env.cresslet` re-read on save):
+
+```ts
+// vite.config.ts
+import { cresslet } from "cresslet/vite";
+export default defineConfig({ plugins: [cresslet(), tanstackStart(), viteReact()] });
+```
+
 ## Commands
 
 | | |
 |---|---|
-| `new <dir> [--template react\|vanilla]`, `init`, `templates` | scaffold |
+| `new <dir> [--template react\|vanilla\|tanstack-start]`, `init`, `templates` | scaffold |
 | `dev [--port 3000]` | esbuild watch, live reload, server handler with local `db`/`files` (node:sqlite; SDK and `env`), secrets from `.env.cresslet`. WebSockets (`WebSocketPair`) work on server routes; run a cron by hand with `curl -X POST -H 'x-cresslet-dev: 1' 'localhost:3000/__cresslet/scheduled?cron=<expr>'` |
-| `build` | client → `dist/`, server → `.cresslet/build/server.js` |
+| `build` | client → `dist/`, server → `.cresslet/build/server.js` (framework apps: `build.command`, then the server bundle) |
 | `deploy [--name n] [--no-source]` | build + upload, with `crons` from `cresslet.json` and the project source (minus `node_modules/`, `dist/`, `.cresslet/`, `.git/`, `.env.cresslet*`, `.env*.local`, files matching top-level `.gitignore` simple patterns; other `.env*` files keep only single-line `CRESSLET_PUBLIC_*`/`VITE_*` entries, and nothing after the first line that isn't a plain `NAME=value` (a multi-line value), as the server does). Source shares the deploy's file/size limits; if it doesn't fit, the deploy goes without it. First deploy stores the deploy key in `.cresslet/app.json` (gitignored) |
 | `deploy --dir <static> [--server <bundle.js>]` | deploy prebuilt output (any toolchain) |
 | `deploy <file.html> \| deploy <dir> --artifact [--name n] [--visibility private\|link\|public] [--keep <days>\|forever] [--title t]` | deploy an **artifact** (account login): a single HTML file, or a folder with an `index.html` (hidden files and `node_modules/` left out). A folder without `cresslet.json` is a public app unless you pass `--artifact` (or `--visibility` / `--keep` / `--title`). The link to it is kept in `.cresslet/artifacts.json` next to the file or folder (outside the folder, so a rebuilt `dist/` keeps it; gitignored inside a git repo), so deploying it again updates the same URL (if it expired, you get a new one); `--name` picks the address (yours, or a new one). Settings left out come from your defaults |

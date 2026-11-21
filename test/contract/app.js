@@ -4,7 +4,7 @@
 // through the SDK (run it before any request: a cron can be the first thing a sandbox does); GET /api/contract/cron
 // lists those runs.
 // Expects the secret CONTRACT_SECRET=s3cret and no secret named CONTRACT_MISSING.
-import { app, CONTRACT, CressletError, db, files, secrets } from "cresslet";
+import { app, CONTRACT, CressletError, db, files, kv, secrets } from "cresslet";
 
 // Module top level runs before any handler: the SDK says so instead of failing on an undefined property.
 let topLevel = "no error";
@@ -119,6 +119,45 @@ const cases = {
     eq(["CONTRACT_SECRET" in secrets, Object.keys(secrets).includes("CONTRACT_SECRET")], [true, true], "keys");
     const e = await rejects(() => secrets.get("CONTRACT_MISSING"), /CONTRACT_MISSING.*not set/, "missing");
     if (!(e instanceof CressletError)) throw new Error("not a CressletError");
+  },
+  "kv set, get, list, delete (JSON values, prefix with LIKE wildcards)": async () => {
+    await kv.set("contract:a", { n: 1, s: "x" });
+    await kv.set("contract:b", [1, "two", null]);
+    await kv.set("contract_%", "literal"); // LIKE wildcards in a prefix are literal
+    eq(await kv.get("contract:a"), { n: 1, s: "x" }, "get");
+    eq(await kv.get("contract:nope"), null, "missing");
+    await kv.set("contract:a", "replaced");
+    eq(await kv.get("contract:a"), "replaced", "overwrite");
+    eq((await kv.list("contract:")).map((e) => [e.key, e.value, e.expiresAt]), [["contract:a", "replaced", null], ["contract:b", [1, "two", null], null]], "list");
+    eq((await kv.list("contract_")).map((e) => e.key), ["contract_%"], "list escapes wildcards");
+    eq((await kv.list("contract:", { limit: 1 })).length, 1, "limit");
+    await kv.delete("contract:a");
+    await kv.delete("contract:a"); // twice: fine
+    eq(await kv.get("contract:a"), null, "deleted");
+    await rejects(() => kv.set("contract:u", undefined), /JSON-serializable/, "undefined value");
+    await rejects(() => kv.get(""), /non-empty/, "empty key");
+    await rejects(() => kv.set("k", 1, { ttl: -1 }), /ttl/, "bad ttl");
+  },
+  "kv ttl expires entries; incr is atomic and restarts after its window": async () => {
+    await kv.set("contract:ttl", "soon", { ttl: 0.05 });
+    const e = (await kv.list("contract:ttl"))[0];
+    eq([e.value, typeof e.expiresAt], ["soon", "number"], "ttl entry");
+    await new Promise((r) => setTimeout(r, 80));
+    eq(await kv.get("contract:ttl"), null, "expired get");
+    eq(await kv.list("contract:ttl"), [], "expired list");
+    eq(await Promise.all(Array.from({ length: 10 }, () => kv.incr("contract:n"))).then((v) => v.sort((a, b) => a - b)), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "concurrent incr");
+    eq((await db.first(db.sql`SELECT value FROM _cresslet_kv WHERE key = ${"contract:n"}`)).value, "10", "whole-number counter stays an integer");
+    eq(await kv.incr("contract:n", 2.5), 12.5, "incr by");
+    eq(await kv.get("contract:n"), 12.5, "incr value");
+    await kv.set("contract:s", "text");
+    eq(await kv.incr("contract:s"), 1, "non-number counts as 0");
+    eq(await kv.incr("contract:w", 1, { ttl: 0.05 }), 1, "window start");
+    eq(await kv.incr("contract:w", 1, { ttl: 0.05 }), 2, "same window");
+    await new Promise((r) => setTimeout(r, 80));
+    eq(await kv.incr("contract:w", 1, { ttl: 60 }), 1, "new window");
+    const w = (await kv.list("contract:w"))[0];
+    eq(w.expiresAt > Date.now() + 30_000, true, "new window's ttl");
+    eq((await db.first(db.sql`SELECT count(*) AS c FROM _cresslet_kv WHERE key LIKE 'contract:%'`)).c > 0, true, "kept in the app's db");
   },
   "files put, get, list, delete": async () => {
     await files.put("contract/a.txt", "hello", { contentType: "text/plain" });
