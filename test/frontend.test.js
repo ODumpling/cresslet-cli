@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build, publicDotenvText, readSource } from "../lib/build.js";
+import { build, listSources, publicDotenvText, publicEnv, readSource } from "../lib/build.js";
 import { dev } from "../lib/dev.js";
 import { extractCandidates, globToRegExp, htmlEnv, scanSources } from "../lib/frontend.js";
 
@@ -72,11 +72,20 @@ test("publicDotenvText: BOM and CRLF", () => {
   assert.equal(publicDotenvText("﻿VITE_A=1\r\nSECRET=x\r\nVITE_B=2\r\n"), "VITE_A=1\nVITE_B=2\n");
 });
 
-test("readSource sanitizes every dotenv-style name, leaves other files byte-for-byte", () => {
+test("readSource sanitizes every .env* name (as the server), leaves other files byte-for-byte", () => {
   const secret = 'VITE_A=1\nKEY="-----BEGIN\nVITE_LEAK=sk_live\n-----END"\nVITE_B=2\n';
-  const dir = project({ ".env": secret, ".env.production": secret, "sub/.ENV_backup": secret, "src/.environment.js": secret }, { modules: false });
-  for (const f of [".env", ".env.production", "sub/.ENV_backup"]) assert.equal(readSource(dir, f).toString(), "VITE_A=1", f);
-  assert.equal(readSource(dir, "src/.environment.js").toString(), secret);
+  const names = [".env", ".env.production", "sub/.ENV_backup", ".env~", ".env copy", ".envbak", "src/.environment.js"];
+  const dir = project({ ...Object.fromEntries(names.map((f) => [f, secret])), "src/env.js": secret }, { modules: false });
+  for (const f of names) assert.equal(readSource(dir, f).toString(), "VITE_A=1", f);
+  assert.equal(readSource(dir, "src/env.js").toString(), secret);
+});
+
+test("listSources leaves out what the server never stores as source", () => {
+  const out = [".env.local", ".env.production.local", ".env.cresslet", ".env.cresslet.prod", "sub/.env.local.bak", ".envrc", ".envrc.bak",
+    ".dev.vars", ".dev.vars.bak", ".envs/prod.txt", "sub/.env.d/x"];
+  const kept = [".env", ".env~", "src/a.js"];
+  const dir = project(Object.fromEntries([...out, ...kept].map((f) => [f, "SECRET=x"])), { modules: false });
+  assert.deepEqual(listSources(dir), [...kept].sort());
 });
 
 // ---- build parity
@@ -189,6 +198,62 @@ test("build: ?raw and ?url imports, %VITE_X% in index.html", async () => {
   assert.ok(js.includes("# raw text 123"));
   assert.match(js, /"\/assets\/logo-[A-Z0-9]+\.svg"/);
   assert.ok(r.files.some((f) => /^assets\/logo-.*\.svg$/.test(f)));
+});
+
+test("publicEnv: Studio's files, precedence and value syntax; fail closed on multi-line values", () => {
+  const dir = project({
+    // (a backslash is not understood by every parser: it ends the file, as on the server)
+    ".env": 'VITE_A=base\nVITE_B="quoted" # note\nVITE_C=plain # note\nSECRET=x\nVITE_N="a\\nb"\nVITE_Z=after\n',
+    ".env.local": "VITE_A=local\n",
+    ".env.production": "VITE_P=prod\n",
+    ".env.production.local": 'VITE_P=prodlocal\nKEY="-----BEGIN\nVITE_LEAK=sk_live\n-----END"\nVITE_AFTER=1\n',
+  }, { modules: false });
+  const env = publicEnv(dir, "production");
+  assert.deepEqual(
+    { A: env.VITE_A, B: env.VITE_B, C: env.VITE_C, P: env.VITE_P },
+    { A: "local", B: '"quoted"', C: "plain", P: "prodlocal" }, // (Studio keeps a quoted value's quotes before a comment)
+  );
+  for (const k of ["SECRET", "VITE_N", "VITE_Z", "VITE_LEAK", "VITE_AFTER"]) assert.ok(!(k in env), k);
+});
+
+test("build: a multi-line secret's continuation never reaches index.html or the bundle", async () => {
+  const dir = project({
+    "package.json": pkg({}),
+    ".env": 'VITE_OK=yes\nPRIVATE="-----BEGIN\nVITE_LEAK=sk_live_html\n-----END"\n',
+    "index.html": html("<title>%VITE_OK% %VITE_LEAK%</title>", '<script type="module" src="/src/main.js"></script>'),
+    "src/main.js": "window.e = import.meta.env;\n",
+  }, { modules: false });
+  await build(dir);
+  const out = read(dir, "dist/index.html") + outputs(dir, ".js");
+  assert.match(out, /<title>yes %VITE_LEAK%<\/title>/);
+  assert.ok(!out.includes("sk_live_html"));
+});
+
+test("build: root-relative ?raw / ?url, two @source globs under one directory, NODE_ENV left as it was", async () => {
+  const dir = project({
+    "package.json": JSON.stringify({ name: "x", type: "module", devDependencies: { tailwindcss: "^4" } }),
+    "index.html": html('<link rel="stylesheet" href="/src/style.css">', '<script type="module" src="/src/main.js"></script>'),
+    "src/style.css": '@import "tailwindcss" source(none);\n@source "./views/**/*.html";\n@source "./views/**/*.vue";\n',
+    "src/views/a.html": '<p class="bg-pink-300"></p>',
+    "src/views/b.vue": '<template><p class="bg-teal-300"></p></template>',
+    "src/main.js": 'import t from "/src/notes.txt?raw";\nimport u from "/src/logo.svg?url";\nwindow.x = [t, u];\n',
+    "src/notes.txt": "root raw 42",
+    "src/logo.svg": "<svg/>",
+  });
+  const before = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  try {
+    await build(dir);
+    assert.equal(process.env.NODE_ENV, "test");
+  } finally {
+    if (before === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = before;
+  }
+  const css = outputs(dir, ".css");
+  assert.ok(css.includes("bg-pink-300") && css.includes("bg-teal-300"));
+  const js = outputs(dir, ".js");
+  assert.ok(js.includes("root raw 42"));
+  assert.match(js, /"\/assets\/logo-[A-Z0-9]+\.svg"/);
 });
 
 test("build: compile errors name the file and line; a missing compiler says what to install", async () => {

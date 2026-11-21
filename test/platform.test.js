@@ -725,7 +725,7 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
     const backup = sources.find((s) => s.path === "sub/.ENV_BACKUP");
     assert.equal(Buffer.from(backup.data, backup.encoding).toString(), "VITE_B=1\n"); // any .env-style name is sanitized
     const code = sources.find((s) => s.path === "sub/.environment.js");
-    assert.equal(Buffer.from(code.data, code.encoding).toString(), "export const x = 1;\n"); // not a dotenv file
+    assert.equal(Buffer.from(code.data, code.encoding).toString(), ""); // any .env* name, as the server sanitizes it
 
     await cli(dir, api, "deploy", "--dir", "sub");
     const files = api.calls.at(-1).body.files.map((f) => f.path);
