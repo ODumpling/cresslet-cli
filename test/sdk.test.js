@@ -130,6 +130,28 @@ export default { fetch: () => new Response("v2") };`;
   }
 });
 
+test("dev: two dev servers in one process each see their own bindings", async () => {
+  const app = (name) => `import { app, db } from "cresslet";
+export default { async fetch() {
+  await new Promise((r) => setTimeout(r, 200)); // overlapping requests
+  return Response.json({ name: app.name, n: (await db.first("SELECT ${name === "one" ? 1 : 2} AS n")).n });
+} };`;
+  const dirs = [project(app("one")), project(app("two"))];
+  fs.writeFileSync(path.join(dirs[0], "cresslet.json"), '{"name":"one"}');
+  fs.writeFileSync(path.join(dirs[1], "cresslet.json"), '{"name":"two"}');
+  const [a, b] = [await dev(loadProject(dirs[0]), { port: 0, log: () => {} }), await dev(loadProject(dirs[1]), { port: 0, log: () => {} })];
+  try {
+    const [ra, rb] = await Promise.all([a, b].map(async (d) => (await fetch(`${d.url}/api/x`)).json()));
+    assert.deepEqual([ra, rb], [{ name: "one", n: 1 }, { name: "two", n: 2 }]);
+  } finally {
+    await b.close();
+    assert.ok(globalThis[KEY], "still installed while one dev server runs");
+    assert.deepEqual(await (await fetch(`${a.url}/api/x`)).json(), { name: "one", n: 1 });
+    await a.close();
+  }
+  assert.equal(globalThis[KEY], undefined);
+});
+
 test("package exports the SDK (types too); its version is the package's", () => {
   assert.deepEqual(PKG.exports["."], { types: "./sdk/index.d.ts", default: "./sdk/index.js" });
   assert.ok(PKG.files.includes("sdk"));
