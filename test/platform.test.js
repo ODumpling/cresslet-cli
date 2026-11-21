@@ -948,3 +948,91 @@ test("new against a non-default server records it in the project, so deploy goes
     await api.close();
   }
 });
+
+/** Routes for inspect / logs / db / secrets / rollback / delete / open of `name`, under its encoded path. */
+function appRoutes(name) {
+  const p = `/v1/apps/${encodeURIComponent(name)}`;
+  const app = { name, url: "ftp://not-opened", claimed: true, config: {}, currentDeployId: "dep_1" };
+  return {
+    [`GET ${p}`]: () => ({ app, runtime: {}, secrets: [], deploys: [] }),
+    [`GET ${p}/logs`]: () => ({}),
+    [`GET ${p}/db`]: () => ({ tables: {} }),
+    [`GET ${p}/secrets`]: () => ({ keys: [] }),
+    [`POST ${p}/rollback`]: () => ({ app }),
+    [`DELETE ${p}`]: () => ({ ok: true }),
+  };
+}
+const APP_CMDS = [["inspect"], ["logs"], ["db"], ["secrets"], ["rollback", "dep_1"], ["delete", "--yes"], ["open"]];
+
+test("app commands --app work outside a project", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-noproj-"));
+  const api = await fakeApi(appRoutes("x"));
+  try {
+    for (const [cmd, ...rest] of APP_CMDS) {
+      await cli(cwd, api, cmd, ...rest, "--app", "x");
+      assert.equal(api.calls.at(-1).path.split("?")[0].replace(/\/(logs|db|secrets|rollback)$/, ""), "/v1/apps/x", cmd);
+    }
+  } finally {
+    await api.close();
+  }
+});
+
+test("app commands: the project's deploy key only for its own app + API", async () => {
+  const dir = copyFixture();
+  const api = await fakeApi({ ...appRoutes("a"), ...appRoutes("x") });
+  const setLink = () => {
+    fs.mkdirSync(path.join(dir, ".cresslet"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".cresslet", "app.json"), JSON.stringify({ name: "a", api: api.url, deployKey: "key_a" }));
+  };
+  const key = () => api.calls.at(-1).headers["x-cresslet-deploy-key"];
+  try {
+    for (const [cmd, ...rest] of APP_CMDS) {
+      setLink();
+      await cli(dir, api, cmd, ...rest);
+      assert.equal(key(), "key_a", cmd);
+      setLink();
+      await cli(dir, api, cmd, ...rest, "--app", "x");
+      assert.equal(key(), undefined, `${cmd} --app x`);
+      if (cmd === "inspect" || cmd === "logs") {
+        await cli(dir, api, cmd, "x");
+        assert.equal(key(), undefined, `${cmd} x`);
+      }
+      await cli(dir, api.url.replace("127.0.0.1", "localhost"), cmd, ...rest);
+      assert.equal(key(), undefined, `${cmd} other api`);
+    }
+  } finally {
+    await api.close();
+  }
+});
+
+test("delete unlinks the project only when the deleted app (and server) is the linked one", async () => {
+  const dir = copyFixture();
+  const api = await fakeApi({ ...appRoutes("a"), ...appRoutes("x") });
+  const linkFile = path.join(dir, ".cresslet", "app.json");
+  fs.mkdirSync(path.dirname(linkFile), { recursive: true });
+  fs.writeFileSync(linkFile, JSON.stringify({ name: "a", api: api.url, deployKey: "key_a" }));
+  try {
+    await cli(dir, api, "delete", "--yes", "--app", "x");
+    assert.ok(fs.existsSync(linkFile), "--app other kept the link");
+    await cli(dir, api.url.replace("127.0.0.1", "localhost"), "delete", "--yes");
+    assert.ok(fs.existsSync(linkFile), "other server kept the link");
+    await cli(dir, api, "delete", "--yes");
+    assert.ok(!fs.existsSync(linkFile), "deleting the linked app unlinks");
+  } finally {
+    await api.close();
+  }
+});
+
+test("app names are URL-encoded in app command paths", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-noproj-"));
+  const name = "a b/c";
+  const api = await fakeApi(appRoutes(name));
+  try {
+    for (const [cmd, ...rest] of APP_CMDS) {
+      await cli(cwd, api, cmd, ...rest, "--app", name);
+      assert.ok(api.calls.at(-1).path.startsWith("/v1/apps/a%20b%2Fc"), `${cmd}: ${api.calls.at(-1).path}`);
+    }
+  } finally {
+    await api.close();
+  }
+});
