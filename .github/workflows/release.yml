@@ -29,11 +29,9 @@ jobs:
       - run: npm ci
       - run: npm test
 
-      # Uses trusted publishing when configured on npmjs.com; otherwise
-      # falls back to the NPM_TOKEN secret (needed for the very first publish).
+      # Trusted publishing: configure on npmjs.com (package settings) for
+      # ODumpling/cresslet-cli, workflow release.yml. No token needed.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: GitHub release
         run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
