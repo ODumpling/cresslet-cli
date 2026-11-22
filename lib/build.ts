@@ -351,7 +351,8 @@ export function listFiles(dir: string, { skip }: { skip?: ((rel: string, isDir: 
  * Project source for `cresslet deploy` (so `cresslet pull` / the studio can open it).
  * `exclude`: absolute paths left out (build output, the CLI's own config dir).
  */
-export function listSources(root: string, { exclude = [] }: { exclude?: string[] } = {}): string[] {
+/** `gitignore: false`: don't apply the top-level .gitignore here (git decides, in a checkout: `cresslet git`). */
+export function listSources(root: string, { exclude = [], gitignore: useGitignore = true }: { exclude?: string[]; gitignore?: boolean } = {}): string[] {
   const real = (p: string) => {
     try {
       return fs.realpathSync(p); // e.g. macOS /var → /private/var
@@ -363,7 +364,7 @@ export function listSources(root: string, { exclude = [] }: { exclude?: string[]
   const skip = exclude.map(real);
   const excluded = (abs: string) => skip.some((x) => abs === x || abs.startsWith(x + path.sep));
   if (excluded(root)) return [];
-  const ignored = gitignore(root);
+  const ignored = useGitignore ? gitignore(root) : () => false;
   const out: string[] = [];
   const walk = (d: string) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {

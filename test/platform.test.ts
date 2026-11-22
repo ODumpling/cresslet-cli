@@ -1366,6 +1366,10 @@ test("git sync / connect --push: only what git would commit, never an empty or p
   fs.writeFileSync(path.join(dir, "nested", ".gitignore"), "credentials.json\n");
   fs.writeFileSync(path.join(dir, "nested", "credentials.json"), "{\"secret\":1}");
   fs.writeFileSync(path.join(dir, "nested", "ok.txt"), "ok");
+  // Git's rules, not a simplified reading: a negation re-includes a file.
+  fs.appendFileSync(path.join(dir, ".gitignore"), "\n*.keep\n!wanted.keep\n");
+  fs.writeFileSync(path.join(dir, "wanted.keep"), "w");
+  fs.writeFileSync(path.join(dir, "other.keep"), "o");
   await gitIn(dir, "init", "-q", "-b", "main");
   await gitIn(dir, "add", "-A");
   await gitIn(dir, "commit", "-qm", "init");
@@ -1383,6 +1387,7 @@ test("git sync / connect --push: only what git would commit, never an empty or p
     const paths = connect.files.map((f: WireFile) => f.path);
     assert.ok(paths.includes("nested/ok.txt"));
     assert.ok(!paths.includes("nested/credentials.json"), "git-ignored file pushed");
+    assert.ok(paths.includes("wanted.keep") && !paths.includes("other.keep"));
     // The app lives elsewhere in the repository: refused.
     subdir = "apps/shop";
     const wrong = await cli(dir, api, "git", "sync").catch((e: ExecError) => e);

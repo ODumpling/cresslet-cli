@@ -175,5 +175,6 @@ test("githubRepo: github.com remotes only, in any form", async () => {
   assert.equal(githubRepo("https://GitHub.com/octo/shop.git/"), "octo/shop");
   assert.equal(githubRepo("https://notgithub.com/octo/shop.git"), null);
   assert.equal(githubRepo("git@gitlab.com:octo/shop.git"), null);
+  assert.equal(githubRepo("github.com:octo/shop.git"), "octo/shop");
   assert.equal(githubRepo(null), null);
 });
