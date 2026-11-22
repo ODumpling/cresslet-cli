@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { apiBase, apiSource, type Client, client } from "./api.ts";
 import { build, type FrameworkBuild, frameworkBuild, listFiles, listSources, notStatic, readSource, runCommand } from "./build.ts";
 import { dev } from "./dev.ts";
@@ -216,6 +216,8 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   const t0 = performance.now();
 
   const warn = (msg: string) => !flags.json && process.stderr.write(color.yellow(msg + "\n"));
+  // Before building: its output isn't an uncommitted change.
+  const git = gitProvenance(project.root, warn);
   if (staticFirst) warn(`${target ?? "this folder"} has no cresslet.json: it goes live as a public app that anyone can open`);
   let staticDir: string, serverFile: string | null;
   const dir = textFlag(flags, "dir");
@@ -262,6 +264,7 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
     config: { routes: project.config.routes, crons: project.config.crons },
     source: "cli",
     sources,
+    ...(git ? { git } : {}),
   };
   type Deployed = {
     deployKey?: string;
@@ -295,6 +298,161 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
       console.log(color.dim(`  private, link-only or expiring instead? cresslet deploy${t ? ` ${t}` : ""} --artifact${on}, then take this app down: ${target ? `cd ${target} && ` : ""}cresslet delete`));
     }
   }, { kind: "app", ...r });
+}
+
+/** `git …` in `dir`, or null (no git, not a repository). */
+function gitOut(dir: string, ...args: string[]): string | null {
+  return gitRaw(dir, ...args)?.trim() ?? null;
+}
+/** `git …` output as is (`-z` lists: names can start or end with spaces), or null. */
+function gitRaw(dir: string, ...args: string[]): string | null {
+  try {
+    return execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 256 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+
+/** `owner/name` of a github.com remote URL (https, ssh://, or git's `[user@]host:path`), or null. */
+export function githubRepo(url: string | null): string | null {
+  if (!url) return null;
+  let host: string, p: string;
+  if (url.includes("://")) {
+    try {
+      const u = new URL(url);
+      [host, p] = [u.hostname, u.pathname];
+    } catch {
+      return null;
+    }
+  } else {
+    const m = url.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/); // git's scp-like form
+    if (!m) return null;
+    [host, p] = [m[1], m[2]];
+  }
+  if (host.toLowerCase() !== "github.com") return null;
+  const m = p.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").match(/^([\w.-]+)\/([\w.-]+)$/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** The checkout's branch (`refs/heads/…` stripped: a tag of the same name doesn't change it), or null. */
+const gitBranch = (dir: string) => gitOut(dir, "symbolic-ref", "-q", "HEAD")?.replace(/^refs\/heads\//, "") || null;
+
+/**
+ * The commit a deploy is built from, when the project is a git checkout with nothing uncommitted (else the commit
+ * wouldn't be what's deployed): shown with the deploy (`cresslet inspect`, the studio).
+ */
+function gitProvenance(dir: string, warn: (msg: string) => void): { sha: string; branch?: string; repo?: string } | null {
+  const sha = gitOut(dir, "rev-parse", "HEAD");
+  if (!sha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) return null;
+  const status = gitOut(dir, "status", "--porcelain", "--untracked-files=all", "--", ".");
+  if (status !== "") {
+    if (status) warn("uncommitted changes: this deploy isn't recorded as a commit");
+    return null;
+  }
+  const branch = gitBranch(dir);
+  const repo = githubRepo(gitOut(dir, "config", "--get", "remote.origin.url"));
+  return { sha, ...(branch ? { branch } : {}), ...(repo ? { repo } : {}) };
+}
+
+/**
+ * This project's source for a commit (`git connect --push`, `git sync`): the deploy filter, minus build output and
+ * anything git ignores (any .gitignore, .git/info/exclude, global excludes) in a git checkout. Never empty, never
+ * partial: the server makes the branch hold exactly these files.
+ */
+function commitSources(project: Project): WireFile[] {
+  const root = project.root;
+  const fw = frameworkBuild(project.config);
+  const out = fw ? path.relative(root, path.resolve(root, fw.static)).split(path.sep).join("/") : null;
+  const inGit = gitOut(root, "rev-parse", "--is-inside-work-tree") === "true";
+  // In a checkout git's own ignore rules decide (all of them, negations too), not the deploy filter's simple reading.
+  // Folders git ignores aren't walked at all (big, or unreadable: a database's bind mount, say). Exact: git can't
+  // re-include a file inside an ignored folder.
+  const ignoredDirs = inGit
+    ? (gitRaw(root, "ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory", "--", ".") ?? "").split("\0").filter((p) => p.endsWith("/")).map((p) => path.join(root, p))
+    : [];
+  let paths = listSources(root, { exclude: [configDir(), path.join(root, "dist"), ...(fw ? [path.resolve(root, fw.static)] : []), ...ignoredDirs], gitignore: !inGit });
+  if (inGit) {
+    const listed = gitRaw(root, "ls-files", "-z", "-co", "--exclude-standard", "--", ".");
+    if (listed === null) throw new CliError("couldn't list this checkout's files with git");
+    const ok = new Set(listed.split("\0").filter(Boolean));
+    paths = paths.filter((p) => ok.has(p));
+    // Committed build output would be deleted from the branch (the commit holds exactly what's sent).
+    if (out && !out.startsWith("..") && out !== "dist" && !out.startsWith("dist/")) { // the server never deletes dist/
+      const tracked = (gitRaw(root, "ls-files", "-z", "-c", "--", out) ?? "").split("\0").filter(Boolean);
+      if (tracked.length) throw new CliError(`${out}/ (build output) is committed: a commit from here would delete it`, `git --literal-pathspecs rm -r --cached -- '${out.replace(/'/g, "'\\''")}' and add it to .gitignore first`);
+    }
+  }
+  if (!paths.length) throw new CliError("no source files to commit here");
+  if (paths.length > maxFiles()) throw new CliError(`${paths.length} source files: more than the ${maxFiles()} a commit may hold`);
+  let bytes = 0;
+  for (const p of paths) {
+    bytes += fs.statSync(path.join(root, p)).size;
+    if (bytes > maxBytes()) throw new CliError(`the source is over ${formatBytes(maxBytes())}: too big to commit`);
+  }
+  return paths.map((p) => ({ path: p, data: readSource(root, p).toString("base64"), encoding: "base64" }));
+}
+
+// ---------------------------------------------------------------- git: the app's GitHub repository (server-side)
+type GitStatus = {
+  repo: { fullName: string; url: string; defaultBranch: string; subdir: string };
+  defaultBranch: string;
+  mainSha: string | null;
+  branches: { name: string; sha: string; protected: boolean }[];
+};
+
+/**
+ * `cresslet git status|connect <owner/repo> [--push|--pull]|sync [-m msg] [--branch b]`: the app's linked GitHub
+ * repository, as the logged-in user (the server holds their GitHub token: connect GitHub once in the studio).
+ */
+export async function cmdGit({ _: [sub = "status", repoArg], flags }: Args): Promise<void> {
+  const project = loadProject(process.cwd(), { required: !flags.app });
+  const name = appName(project ?? { link: {}, config: {} }, flags);
+  const api = appClient(flags, project, name);
+  const base = `/v1/apps/${encodeURIComponent(name)}/git`;
+  if (sub === "status") {
+    const r = await api.get<GitStatus>(`${base}/status`);
+    return out(flags, () => {
+      console.log(`${color.bold(r.repo.fullName)}  ${color.cyan(r.repo.url)}${r.repo.subdir ? color.dim(` (in ${r.repo.subdir}/)`) : ""}`);
+      for (const b of r.branches) {
+        console.log(`  ${b.name === r.defaultBranch ? color.green("●") : " "} ${b.name}  ${color.dim(b.sha.slice(0, 7))}${b.protected ? color.dim(" protected") : ""}`);
+      }
+    }, r);
+  }
+  if (sub === "connect") {
+    const m = (githubRepo(repoArg ?? null) ?? repoArg?.replace(/\.git$/, ""))?.match(/^([\w.-]+)\/([\w.-]+)$/);
+    if (!m) throw new CliError("usage: cresslet git connect <owner/repo> [--push]", "the GitHub repository to link this app to");
+    if (flags.pull) throw new CliError("--pull isn't supported here: link, then `git clone` the repository");
+    const push = !!flags.push;
+    if (push && !project) throw new CliError("--push needs a project here (its files are pushed)");
+    const files = push ? commitSources(project!) : undefined;
+    const r = await api.post<{ repo: { fullName: string; url: string }; sha: string }>(`${base}/connect`, {
+      owner: m[1], repo: m[2], initialSync: push ? "push" : "none", ...(files ? { files } : {}),
+    });
+    return out(flags, `${color.green("✔")} ${name} linked to ${r.repo.fullName}${push ? ` (pushed: ${r.sha.slice(0, 7)})` : ""}  ${color.cyan(r.repo.url)}`, r);
+  }
+  if (sub === "sync") {
+    if (!project) throw new CliError("run it in the project: its files are what's committed");
+    const st = await api.get<GitStatus>(`${base}/status`);
+    // The project must be where the app lives in the repository (its subdir): its files replace that folder.
+    const prefix = gitOut(project.root, "rev-parse", "--show-prefix");
+    if (prefix !== null && prefix.replace(/\/$/, "") !== st.repo.subdir) {
+      throw new CliError(`${name} lives in ${st.repo.subdir || "the root"} of ${st.repo.fullName}, but this project is ${prefix ? `in ${prefix.replace(/\/$/, "")}` : "at the root"} of its checkout`);
+    }
+    const branch = textFlag(flags, "branch") ?? gitBranch(project.root) ?? st.defaultBranch;
+    const head = st.branches.find((b) => b.name === branch)?.sha;
+    if (!head) throw new CliError(`no branch ${branch} in ${st.repo.fullName}`, "push it with git first, or pass --branch <an existing one>");
+    // On top of what this checkout last had from GitHub: never over commits it hasn't seen.
+    const local = gitOut(project.root, "rev-parse", "HEAD");
+    const baseSha = textFlag(flags, "base") ?? local;
+    if (baseSha !== head) {
+      throw new CliError(`${branch} on GitHub is at ${head.slice(0, 7)}, this checkout at ${baseSha?.slice(0, 7) ?? "no commit"}`,
+        "git pull first (--base <sha> stands in for this checkout's commit outside a git checkout; it must be GitHub's head too)");
+    }
+    const files = commitSources(project);
+    const r = await api.post<{ sha: string; changed: boolean }>(`${base}/sync`, { branch, baseSha, files, message: textFlag(flags, "m") ?? textFlag(flags, "message") });
+    return out(flags, r.changed ? `${color.green("✔")} committed to ${branch}: ${r.sha.slice(0, 7)}` : "nothing to commit", r);
+  }
+  throw new CliError(`unknown git command: ${sub}`, "use status | connect <owner/repo> [--push] | sync [-m message]");
 }
 
 // ---------------------------------------------------------------- deploy: artifacts
@@ -674,7 +832,8 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
     app: { name: string; url: string; claimed: boolean; expiresAt: string; config: { routes?: string[]; server?: unknown } };
     runtime: { running: boolean; pid?: number };
     secrets: string[];
-    deploys: { current: boolean; id: string; createdAt: string; files: number; bytes: number; server: unknown; source: string }[];
+    deploys: { current: boolean; id: string; createdAt: string; files: number; bytes: number; server: unknown; source: string; git?: { sha: string; branch: string | null } | null }[];
+    repo?: { fullName: string } | null;
   }>(`/v1/apps/${encodeURIComponent(name)}`);
   out(flags, () => {
     const a = r.app;
@@ -683,9 +842,11 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
     console.log(`  routes:  ${(a.config.routes ?? []).join(", ")}${a.config.server ? "" : " (no server)"}`);
     console.log(`  runtime: ${r.runtime.running ? `running (pid ${r.runtime.pid})` : "idle"}`);
     console.log(`  secrets: ${r.secrets.length ? r.secrets.join(", ") : "none"}`);
+    if (r.repo) console.log(`  repo:    ${r.repo.fullName}`);
     console.log("  deploys:");
     for (const d of r.deploys) {
-      console.log(`    ${d.current ? color.green("●") : " "} ${d.id}  ${d.createdAt}  ${d.files} files ${formatBytes(d.bytes)}${d.server ? " +server" : ""}  ${color.dim(d.source)}`);
+      const g = d.git ? `  ${d.git.branch ?? "commit"} @ ${d.git.sha.slice(0, 7)}` : "";
+      console.log(`    ${d.current ? color.green("●") : " "} ${d.id}  ${d.createdAt}  ${d.files} files ${formatBytes(d.bytes)}${d.server ? " +server" : ""}  ${color.dim(d.source + g)}`);
     }
   }, r);
 }

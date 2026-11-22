@@ -166,3 +166,15 @@ test("dev server: static, api with sqlite, dotfiles hidden", async () => {
     await d.close();
   }
 });
+
+test("githubRepo: github.com remotes only, in any form", async () => {
+  const { githubRepo } = await import("../lib/commands.ts");
+  assert.equal(githubRepo("git@github.com:octo/shop.git"), "octo/shop");
+  assert.equal(githubRepo("https://github.com/octo/shop"), "octo/shop");
+  assert.equal(githubRepo("ssh://git@github.com:22/octo/shop.git"), "octo/shop");
+  assert.equal(githubRepo("https://GitHub.com/octo/shop.git/"), "octo/shop");
+  assert.equal(githubRepo("https://notgithub.com/octo/shop.git"), null);
+  assert.equal(githubRepo("git@gitlab.com:octo/shop.git"), null);
+  assert.equal(githubRepo("github.com:octo/shop.git"), "octo/shop");
+  assert.equal(githubRepo(null), null);
+});

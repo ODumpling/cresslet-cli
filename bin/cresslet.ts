@@ -21,6 +21,7 @@ const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> 
   egress: [c.cmdEgress, "egress [allow <host…>|clear]", "outbound fetch allowlist (claimed apps)"],
   secrets: [c.cmdSecrets, "secrets [list|set K=V|unset K]", "manage server secrets (claimed apps)"],
   inspect: [c.cmdInspect, "inspect [app|url]", "show app status and deploys"],
+  git: [c.cmdGit, "git [status|connect <owner/repo> [--push]|sync [-m msg]]", "the app's GitHub repository (connect GitHub in the studio first)"],
   rollback: [c.cmdRollback, "rollback [deployId]", "serve a previous deploy"],
   open: [c.cmdOpen, "open", "open the deployed app"],
   delete: [c.cmdDelete, "delete [-y]", "delete the app and its data"],
@@ -94,7 +95,7 @@ if (wantsHelp) {
 }
 
 try {
-  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact"] }));
+  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);
