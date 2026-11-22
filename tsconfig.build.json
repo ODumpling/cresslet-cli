@@ -5,5 +5,5 @@
     "noEmit": false,
     "declaration": true
   },
-  "include": ["bin/*.ts", "lib/*.ts", "sdk/*.ts", "test/*.ts"]
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "sdk/**/*.ts", "test/*.ts"]
 }

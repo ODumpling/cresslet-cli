@@ -18,5 +18,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["bin/*.ts", "lib/*.ts", "sdk/*.ts", "test/*.ts", "scripts/*.ts"]
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "sdk/**/*.ts", "test/*.ts", "scripts/**/*.ts"]
 }

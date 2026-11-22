@@ -47,7 +47,7 @@
     "build": "node scripts/build.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sdk.json && node scripts/check-ts.ts",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "dependencies": {
     "esbuild": "^0.28.2",

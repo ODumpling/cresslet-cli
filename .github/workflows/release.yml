@@ -28,7 +28,7 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test # builds dist/ and tests it; npm publish builds it again (prepack)
+      - run: npm test # builds dist/ and tests it; npm publish builds it again (prepare)
 
       # Trusted publishing: configure on npmjs.com (package settings) for
       # ODumpling/cresslet-cli, workflow release.yml. No token needed.

@@ -21,11 +21,11 @@ import {
   type Project,
   readGlobal,
   readLink,
+  textFlag,
   writeGlobal,
 } from "./util.ts";
 
-// Flags given without a value are `true` (util.ts parseArgs). Where a command passes a flag on as text
-// (`flags.x as string`), it relies on a value having been given.
+// Flags given without a value are `true` (util.ts parseArgs): read ones that take a value with textFlag().
 
 // ---- the server's replies, as the commands read them (the API is the server's: cresslet repo)
 /** A file in a template, a deploy's source or an upload. */
@@ -83,7 +83,7 @@ const out = (flags: Flags, human: string | (() => void), json?: unknown) => {
 };
 
 const appName = (project: Pick<Project, "link" | "config">, flags: Flags): string => {
-  const name = (flags.app as string | undefined) ?? project.link.name ?? (project.config.name || undefined);
+  const name = textFlag(flags, "app") ?? project.link.name ?? (project.config.name || undefined);
   if (!name) throw new CliError("this app has not been deployed yet", "run `cresslet deploy` first or pass --app <name>");
   return name;
 };
@@ -152,7 +152,7 @@ export async function cmdDev({ flags }: Args): Promise<void> {
   const fw = frameworkBuild(project.config);
   if (fw) return frameworkDev(project, fw, flags);
   const port = Number(flags.port ?? flags.p ?? process.env.PORT ?? 3000);
-  const d = await dev(project, { port, host: (flags.host as string | undefined) ?? "localhost" });
+  const d = await dev(project, { port, host: textFlag(flags, "host") ?? "localhost" });
   console.log(`${color.green("✔")} dev server ${color.bold(d.url)}  ${color.dim("(ctrl+c to stop)")}`);
   for (const cron of project.config.crons ?? []) {
     console.log(color.dim(`  cron "${cron}": curl -X POST -H 'x-cresslet-dev: 1' '${d.url}/__cresslet/scheduled?cron=${encodeURIComponent(cron)}'`));
@@ -217,13 +217,15 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   const warn = (msg: string) => !flags.json && process.stderr.write(color.yellow(msg + "\n"));
   if (staticFirst) warn(`${target ?? "this folder"} has no cresslet.json: it goes live as a public app that anyone can open`);
   let staticDir: string, serverFile: string | null;
-  if (flags.dir) {
-    staticDir = path.resolve(flags.dir as string);
+  const dir = textFlag(flags, "dir");
+  if (dir) {
+    staticDir = path.resolve(dir);
     if (!fs.existsSync(staticDir)) throw new CliError(`--dir not found: ${flags.dir}`);
     // Every component of the resolved path (also outside this project, e.g. a sibling's node_modules).
     const bad = fs.realpathSync(staticDir).split(path.sep).find((s) => s && notStatic(s, true));
     if (bad) throw new CliError(`refusing to deploy --dir ${flags.dir}: inside ${bad}/ (never served)`);
-    serverFile = flags.server ? path.resolve(flags.server as string) : null;
+    const server = textFlag(flags, "server");
+    serverFile = server ? path.resolve(server) : null;
   } else {
     const r = await build(project.root, { config: project.config });
     staticDir = r.outDir;
@@ -468,7 +470,7 @@ export async function cmdPull({ _: [target], flags }: Args): Promise<void> {
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
   // (no target or --app: `project` is required above)
-  let dest = path.resolve((flags.dir as string | undefined) ?? (target || flags.app ? name : project!.root));
+  let dest = path.resolve(textFlag(flags, "dir") ?? (target || flags.app ? name : project!.root));
   dest = realDest(dest);
   const before = readLink(dest); // CLI metadata as it was before the pull (never from the response)
   if (fs.existsSync(dest) && fs.readdirSync(dest).filter((f) => f !== ".git").length && !flags.force) {

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# Tests reach their 127.0.0.1 fake API as `localhost` too: on Linux runners that resolves to ::1 first.
+env:
+  NODE_OPTIONS: --dns-result-order=ipv4first
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -25,6 +25,13 @@ export interface Args {
   flags: Flags;
 }
 
+/** A flag that takes a value: its value, undefined when not given, or a usage error for a bare `--name`. */
+export function textFlag(flags: Flags, name: string): string | undefined {
+  const v = flags[name];
+  if (v === true) throw new CliError(`--${name} needs a value`, `e.g. --${name}=<value>`);
+  return v;
+}
+
 /** Parse argv into { _: positional[], flags }. `bool` lists flags that never take a value. */
 export function parseArgs(argv: string[], { bool = [], alias = {} }: { bool?: string[]; alias?: Record<string, string> } = {}): Args {
   const out: Args = { _: [], flags: {} };
