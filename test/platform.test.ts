@@ -1351,11 +1351,47 @@ test("git status / connect / sync talk to the app's repository endpoints; sync o
     assert.deepEqual([sync.branch, sync.baseSha, sync.message], ["main", sha, "from the CLI"]);
     // This checkout is behind GitHub: refused, nothing sent.
     await gitIn(dir, "commit", "-qm", "local", "--allow-empty");
-    const n = api.calls.length;
     const err = await cli(dir, api, "git", "sync").catch((e: ExecError) => e);
     assert.match((err as ExecError).stderr, /git pull first/);
     assert.equal(api.calls.filter((c) => c.path.endsWith("/git/sync")).length, 1);
-    void n;
+  } finally {
+    await api.close();
+  }
+});
+
+test("git sync / connect --push: only what git would commit, never an empty or partial snapshot, only for the app's folder", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
+  fs.mkdirSync(path.join(dir, "nested"));
+  fs.writeFileSync(path.join(dir, "nested", ".gitignore"), "credentials.json\n");
+  fs.writeFileSync(path.join(dir, "nested", "credentials.json"), "{\"secret\":1}");
+  fs.writeFileSync(path.join(dir, "nested", "ok.txt"), "ok");
+  await gitIn(dir, "init", "-q", "-b", "main");
+  await gitIn(dir, "add", "-A");
+  await gitIn(dir, "commit", "-qm", "init");
+  const sha = (await gitIn(dir, "rev-parse", "HEAD")).stdout.trim();
+  let subdir = "";
+  const api = await fakeApi({
+    "GET /v1/apps/a/git/status": () => ({ repo: { fullName: "octo/shop", url: "u", defaultBranch: "main", subdir }, defaultBranch: "main", mainSha: sha, branches: [{ name: "main", sha, protected: false }] }),
+    "POST /v1/apps/a/git/connect": () => ({ $status: 201, repo: { fullName: "octo/shop", url: "u" }, sha }),
+    "POST /v1/apps/a/git/sync": () => ({ branch: "main", sha, changed: false }),
+  });
+  try {
+    await cli(dir, api, "git", "connect", "octo/shop.git", "--push");
+    const connect = api.calls.find((c) => c.path.endsWith("/git/connect")).body;
+    assert.equal(connect.repo, "shop");
+    const paths = connect.files.map((f: WireFile) => f.path);
+    assert.ok(paths.includes("nested/ok.txt"));
+    assert.ok(!paths.includes("nested/credentials.json"), "git-ignored file pushed");
+    // The app lives elsewhere in the repository: refused.
+    subdir = "apps/shop";
+    const wrong = await cli(dir, api, "git", "sync").catch((e: ExecError) => e);
+    assert.match((wrong as ExecError).stderr, /lives in apps\/shop/);
+    subdir = "";
+    // Over the limits: refused, nothing sent (never an empty snapshot).
+    const over = await cliEnv({ CRESSLET_MAX_DEPLOY_FILES: "1" })(dir, api, "git", "sync").catch((e: ExecError) => e);
+    assert.match((over as ExecError).stderr, /more than the 1/);
+    assert.equal(api.calls.filter((c) => c.path.endsWith("/git/sync")).length, 0);
   } finally {
     await api.close();
   }
