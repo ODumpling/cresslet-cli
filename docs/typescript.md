@@ -29,7 +29,7 @@ container), not in Node.
 
 `npm run build` (scripts/build.ts) deletes `dist/`, runs `tsc -p tsconfig.build.json`, and copies `lib/compilers.cjs`
 to `dist/lib/` (lib/frontend.ts loads it by relative path). `prepare` runs it, so `npm pack` / `npm publish` always ship
-a fresh build (and so do installs from git or a local checkout); `files` is `dist/bin`, `dist/lib`, `dist/sdk` (not `dist/test`). `bin` and `exports` point into `dist/`.
+a fresh build (and so do installs from git, or from a local checkout after `npm install` in it); `files` is `dist/bin`, `dist/lib`, `dist/sdk` (not `dist/test`). `bin` and `exports` point into `dist/`.
 The published types are the declarations tsc emits from `sdk/index.ts` and `lib/vite.ts`: the docs and types there are
 the only copy.
 

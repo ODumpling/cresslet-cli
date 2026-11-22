@@ -108,7 +108,7 @@ export async function cmdInit({ flags }: Args): Promise<void> {
 }
 
 async function scaffold(dest: string, flags: Flags, isNew: boolean) {
-  const template = flags.template ?? flags.t ?? "react";
+  const template = textFlag(flags, "template") ?? textFlag(flags, "t") ?? "react";
   if (fs.existsSync(dest) && fs.readdirSync(dest).filter((f) => f !== ".git").length && !flags.force) {
     throw new CliError(`${dest} is not empty`, "use an empty directory or pass --force");
   }
@@ -247,7 +247,7 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   if (skipped.length) warn(`not uploaded from --dir (never served): ${skipped.join(", ")}`);
   const server = serverFile ? fs.readFileSync(serverFile, "utf8") : null;
   const bytes = fileBytes + (server?.length ?? 0);
-  const name = flags.name ?? project.link.name ?? (project.config.name || undefined);
+  const name = textFlag(flags, "name") ?? project.link.name ?? (project.config.name || undefined);
   // A static folder (no cresslet.json) has no project source to keep.
   const sources = flags["no-source"] || !fs.existsSync(path.join(project.root, "cresslet.json"))
     ? undefined

@@ -1,6 +1,7 @@
 // `npm run build` (and prepare): a fresh dist/ from the TypeScript sources (tsconfig.build.json), plus the vendored
 // JavaScript the compiled code loads by relative path.
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -8,11 +9,9 @@ const root = path.join(import.meta.dirname, "..");
 const dist = path.join(root, "dist");
 
 fs.rmSync(dist, { recursive: true, force: true });
-// The project's own tsc (also when run as `node scripts/build.ts`, outside npm's PATH).
-const tsc = spawnSync(path.join(root, "node_modules", ".bin", "tsc"), ["-p", path.join(root, "tsconfig.build.json")], {
-  stdio: "inherit",
-  shell: process.platform === "win32", // tsc.cmd
-});
+// The project's own tsc, run by this Node (no shell: paths with spaces, Windows), also outside npm's PATH.
+const tscBin = path.join(path.dirname(createRequire(import.meta.url).resolve("typescript/package.json")), "bin", "tsc");
+const tsc = spawnSync(process.execPath, [tscBin, "-p", path.join(root, "tsconfig.build.json")], { stdio: "inherit" });
 if (tsc.error) console.error(`build: ${tsc.error.message}`);
 if (tsc.status !== 0) process.exit(tsc.status ?? 1);
 
