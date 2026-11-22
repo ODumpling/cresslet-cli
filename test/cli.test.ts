@@ -4,14 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs, parseDotenv, loadProject } from "../lib/util.js";
+import { parseArgs, parseDotenv, loadProject } from "../lib/util.ts";
 import { EventEmitter } from "node:events";
-import { build, parseHtml } from "../lib/build.js";
-import { dev, matchRoute, serverRoute } from "../lib/dev.js";
-import { cresslet as vitePlugin } from "../lib/vite.js";
+import { build, parseHtml } from "../lib/build.ts";
+import { dev, matchRoute, serverRoute } from "../lib/dev.ts";
+import { cresslet as vitePlugin } from "../lib/vite.ts";
 import * as sdk from "cresslet";
 
-const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixture");
+// Runs compiled, from dist/test/ (npm test): the fixture is in the repo's test/.
+const FIXTURE = fileURLToPath(new URL("../../test/fixture", import.meta.url));
 
 function copyFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
@@ -49,7 +50,7 @@ test("serverRoute: `!pattern` exclusions win", () => {
 });
 
 /** A project whose cresslet.json `build` runs its own build (as `vite build` would): chunks, a bare import, a dotfile. */
-function frameworkProject(build = {}) {
+function frameworkProject(build: Record<string, string> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-fw-"));
   fs.mkdirSync(path.join(dir, "node_modules", "greet"), { recursive: true });
   fs.writeFileSync(path.join(dir, "node_modules", "greet", "package.json"), JSON.stringify({ name: "greet", type: "module", exports: { worker: "./worker.js", default: "./node.js" } }));
@@ -77,7 +78,7 @@ test("framework build (cresslet.json build): runs the command, serves its static
   assert.equal(r.outDir, path.join(dir, "out", "client"));
   assert.deepEqual(r.files, ["assets/app.js"]); // .env* never served
   assert.equal(fs.readFileSync(path.join(r.outDir, "assets", "app.js"), "utf8"), 'console.log("production")');
-  const code = fs.readFileSync(r.serverFile, "utf8");
+  const code = fs.readFileSync(r.serverFile!, "utf8"); // (build.server is set)
   assert.doesNotMatch(code, /\bimport\s*\(|from\s*["'](?!node:)/, "one module: chunks and node_modules inlined");
   const mod = await import(`data:text/javascript,${encodeURIComponent(code)}`);
   assert.equal(await (await mod.default.fetch(new Request("http://x/boards/1"))).text(), "worker /boards/1");
@@ -101,10 +102,11 @@ test("cresslet/vite plugin: the SDK works under vite dev (db, kv, secrets, app),
   fs.writeFileSync(path.join(dir, ".env.cresslet"), "TOKEN=one\n");
   const watcher = Object.assign(new EventEmitter(), { add() {} });
   const httpServer = new EventEmitter();
-  const server = { config: { root: dir, server: { port: 5199 } }, watcher, httpServer, resolvedUrls: null };
+  const server = { config: { root: dir, server: { port: 5199 } }, watcher, httpServer, resolvedUrls: null as { local: string[] } | null };
   const plugin = vitePlugin();
   assert.equal(plugin.apply, "serve");
-  await plugin.configureServer(server);
+  // (the plugin's published type leaves its Vite hooks `unknown`)
+  await (plugin as unknown as { configureServer(s: typeof server): Promise<void> }).configureServer(server);
   try {
     await sdk.db.exec("CREATE TABLE t (n INTEGER)");
     await sdk.db.run(sdk.db.sql`INSERT INTO t VALUES (${7})`);
@@ -122,7 +124,7 @@ test("cresslet/vite plugin: the SDK works under vite dev (db, kv, secrets, app),
   } finally {
     httpServer.emit("close");
   }
-  assert.equal(globalThis[Symbol.for("cresslet.runtime")], undefined);
+  assert.equal((globalThis as Record<symbol, unknown>)[Symbol.for("cresslet.runtime")], undefined);
 });
 
 test("parseHtml skips public and remote refs", () => {
@@ -142,7 +144,7 @@ test("build produces hashed client + server bundle", async () => {
   assert.ok(js, `no hashed js in ${r.files}`);
   const html = fs.readFileSync(path.join(dir, "dist", "index.html"), "utf8");
   assert.match(html, new RegExp(`src="/${js}"`));
-  assert.ok(fs.readFileSync(r.serverFile, "utf8").includes("export"));
+  assert.ok(fs.readFileSync(r.serverFile!, "utf8").includes("export")); // (the fixture has a server)
 });
 
 test("dev server: static, api with sqlite, dotfiles hidden", async () => {
@@ -153,8 +155,9 @@ test("dev server: static, api with sqlite, dotfiles hidden", async () => {
     const home = await (await fetch(d.url + "/")).text();
     assert.match(home, /\/assets\/src\/main\.js/);
     assert.match(home, /__cresslet\/reload/);
-    assert.equal((await (await fetch(d.url + "/api/visits", { method: "POST" })).json()).visits, 1);
-    assert.equal((await (await fetch(d.url + "/api/visits", { method: "POST" })).json()).visits, 2);
+    const visits = async () => ((await (await fetch(d.url + "/api/visits", { method: "POST" })).json()) as { visits: number }).visits;
+    assert.equal(await visits(), 1);
+    assert.equal(await visits(), 2);
     assert.equal((await fetch(d.url + "/.env.cresslet")).status, 404);
     assert.equal((await fetch(d.url + "/server/index.ts")).status, 404);
     assert.equal((await fetch(d.url + "/assets/src/main.js")).status, 200);

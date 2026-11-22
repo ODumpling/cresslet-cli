@@ -4,33 +4,34 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(HERE, "..", "bin", "cresslet.js");
-const PKG = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8"));
+// Runs compiled, from dist/test/ (npm test): the built CLI is dist/bin/cresslet.js, the repo two levels up.
+const CLI = fileURLToPath(new URL("../bin/cresslet.js", import.meta.url));
+const PKG = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")) as { version: string };
 const run = promisify(execFile);
 
 /** Runs the CLI in a scratch app dir against a server that records every request. */
-async function cli(args) {
-  const calls = [];
+async function cli(args: string[]) {
+  const calls: string[] = [];
   const server = http.createServer(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     calls.push(`${req.method} ${req.url} ${body}`.trim());
-    if (req.url.endsWith("/rollback")) res.writeHead(200).end(JSON.stringify({ app: { currentDeployId: "d1" } }));
+    if (req.url!.endsWith("/rollback")) res.writeHead(200).end(JSON.stringify({ app: { currentDeployId: "d1" } }));
     else res.writeHead(500).end("{}");
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-help-"));
   fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
   fs.writeFileSync(path.join(dir, "index.html"), "<h1>hi</h1>");
   const env = {
     ...process.env,
-    CRESSLET_API: `http://127.0.0.1:${server.address().port}`,
+    CRESSLET_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     CRESSLET_CONFIG_DIR: path.join(dir, ".cfg"),
     CRESSLET_TOKEN: "t",
     NO_COLOR: "1",
@@ -73,7 +74,7 @@ test("auth login --help", async () => {
 });
 
 test("unknown command (even a prototype key) with --help is an error", async () => {
-  await assert.rejects(cli(["constructor", "--help"]), (e) => e.code === 1 && /unknown command: constructor/.test(e.stderr));
+  await assert.rejects(cli(["constructor", "--help"]), (e: { code?: number; stderr?: string }) => e.code === 1 && /unknown command: constructor/.test(e.stderr ?? ""));
 });
 
 test("--version / -v print package.json version", async () => {

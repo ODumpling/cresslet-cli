@@ -1,4 +1,4 @@
-// The `cresslet` SDK (sdk/index.js): the shared contract cases (test/contract/app.js) on `cresslet dev`, how it fails
+// The `cresslet` SDK (sdk/index.ts): the shared contract cases (test/contract/app.js) on `cresslet dev`, how it fails
 // without a runtime, at module top level or on an older runtime, and that builds bundle it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -7,20 +7,26 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { build } from "../lib/build.js";
-import { dev } from "../lib/dev.js";
-import { loadProject } from "../lib/util.js";
+import { build } from "../lib/build.ts";
+import { dev } from "../lib/dev.ts";
+import { loadProject } from "../lib/util.ts";
 import * as sdk from "cresslet"; // the package's own export (self-reference)
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.join(HERE, "..");
+// Runs compiled, from dist/test/ (npm test): the repo is two levels up.
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const TEST = path.join(ROOT, "test");
 const KEY = Symbol.for("cresslet.runtime");
-const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+const g = globalThis as typeof globalThis & { [KEY]?: unknown };
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+  version: string;
+  exports: Record<string, unknown>;
+  files: string[];
+};
 
 /** The fixture with `server` as server/index.js and this package installed as `cresslet`. */
-function project(server, secrets = "CONTRACT_SECRET=s3cret\n") {
+function project(server: string, secrets = "CONTRACT_SECRET=s3cret\n") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-sdk-"));
-  fs.cpSync(path.join(HERE, "fixture"), dir, { recursive: true });
+  fs.cpSync(path.join(TEST, "fixture"), dir, { recursive: true });
   fs.rmSync(path.join(dir, "server"), { recursive: true });
   fs.mkdirSync(path.join(dir, "server"));
   fs.writeFileSync(path.join(dir, "server", "index.js"), server);
@@ -30,18 +36,19 @@ function project(server, secrets = "CONTRACT_SECRET=s3cret\n") {
   return dir;
 }
 
-const withRuntime = async (rt, fn) => {
-  const prev = globalThis[KEY];
-  globalThis[KEY] = rt;
+/** Runs `fn` with `rt` as the runtime the SDK finds (anything: the SDK checks what it gets). */
+const withRuntime = async <T>(rt: unknown, fn: () => T | Promise<T>): Promise<T> => {
+  const prev = g[KEY];
+  g[KEY] = rt;
   try {
     return await fn();
   } finally {
-    globalThis[KEY] = prev;
+    g[KEY] = prev;
   }
 };
 
 test("contract cases pass on cresslet dev", async () => {
-  const dir = project(fs.readFileSync(path.join(HERE, "contract", "app.js"), "utf8"));
+  const dir = project(fs.readFileSync(path.join(TEST, "contract", "app.js"), "utf8"));
   const d = await dev(loadProject(dir), { port: 0, log: () => {} });
   try {
     // a cron run first: before any request
@@ -51,13 +58,13 @@ test("contract cases pass on cresslet dev", async () => {
     });
     assert.equal(cron.status, 204, await cron.text());
     assert.deepEqual(await (await fetch(`${d.url}/api/contract/cron`)).json(), [{ cron: "* * * * *", secret: "s3cret" }]);
-    const { results } = await (await fetch(`${d.url}/api/contract`)).json();
+    const { results } = (await (await fetch(`${d.url}/api/contract`)).json()) as { results: { name: string; ok: boolean; error?: string }[] };
     assert.ok(results.length >= 14, `${results.length} cases`);
     for (const r of results) assert.ok(r.ok, `${r.name}: ${r.error}`);
   } finally {
     await d.close();
   }
-  assert.equal(globalThis[KEY], undefined, "dev's runtime removed on close");
+  assert.equal(g[KEY], undefined, "dev's runtime removed on close");
 });
 
 test("dev: a request on the previous build keeps its bindings while a rebuilt module loads", async () => {
@@ -131,7 +138,7 @@ export default { fetch: () => new Response("v2") };`;
 });
 
 test("dev: two dev servers in one process each see their own bindings", async () => {
-  const app = (name) => `import { app, db } from "cresslet";
+  const app = (name: string) => `import { app, db } from "cresslet";
 export default { async fetch() {
   await new Promise((r) => setTimeout(r, 200)); // overlapping requests
   return Response.json({ name: app.name, n: (await db.first("SELECT ${name === "one" ? 1 : 2} AS n")).n });
@@ -150,31 +157,32 @@ let top;
 try { top = app.name; } catch (e) { top = e.name; }
 const name = () => { try { return app.name; } catch (e) { return e.name; } };
 export default { get fetch() { const got = name(); return () => Response.json({ top, getter: got }); } };`);
-    let seen;
+    type Seen = { top?: string; getter?: string; name?: string; n?: number } | undefined;
+    let seen: Seen;
     for (let i = 0; i < 150 && !seen?.top; i++) {
       await new Promise((r) => setTimeout(r, 100));
-      seen = await (await fetch(`${a.url}/api/x`)).json();
+      seen = (await (await fetch(`${a.url}/api/x`)).json()) as Seen;
     }
     assert.deepEqual(seen, { top: "CressletError", getter: "CressletError" }); // reading the export: no bindings either
     fs.writeFileSync(path.join(dirs[0], "server", "index.js"), app("one"));
-    for (let i = 0; i < 150 && seen?.name !== "one"; i++) {
+    for (let i = 0; i < 150 && (seen as Seen)?.name !== "one"; i++) {
       await new Promise((r) => setTimeout(r, 100));
-      seen = await (await fetch(`${a.url}/api/x`)).json();
+      seen = (await (await fetch(`${a.url}/api/x`)).json()) as Seen;
     }
     await b.close();
     bOpen = false;
-    assert.ok(globalThis[KEY], "still installed while one dev server runs");
+    assert.ok(g[KEY], "still installed while one dev server runs");
     assert.deepEqual(await (await fetch(`${a.url}/api/x`)).json(), { name: "one", n: 1 });
   } finally {
     if (bOpen) await b.close();
     await a.close();
   }
-  assert.equal(globalThis[KEY], undefined);
+  assert.equal(g[KEY], undefined);
 });
 
 test("package exports the SDK (types too); its version is the package's", () => {
-  assert.deepEqual(PKG.exports["."], { types: "./sdk/index.d.ts", default: "./sdk/index.js" });
-  assert.ok(PKG.files.includes("sdk"));
+  assert.deepEqual(PKG.exports["."], { types: "./dist/sdk/index.d.ts", default: "./dist/sdk/index.js" });
+  assert.ok(PKG.files.includes("dist/sdk"));
   assert.equal(sdk.VERSION, PKG.version);
   assert.deepEqual(Object.keys(sdk).sort(), ["CONTRACT", "CressletError", "VERSION", "app", "db", "files", "kv", "secrets"]);
 });
@@ -201,8 +209,8 @@ test("without a runtime, in module scope, or on an older runtime: errors that sa
 });
 
 test("db.sql: placeholders follow the runtime's style; values are never SQL text", async () => {
-  const calls = [];
-  const rec = (op) => async (...a) => (calls.push([op, ...a]), op === "batch" ? [] : []);
+  const calls: unknown[][] = [];
+  const rec = (op: string) => async (...a: unknown[]) => (calls.push([op, ...a]), op === "batch" ? [] : []);
   const env = { db: { query: rec("query"), first: rec("first"), run: rec("run"), batch: rec("batch") } };
   const name = "'; DROP TABLE t; --";
   await withRuntime({ contract: 1, runtime: "pg-ish", paramStyle: "$n", env }, async () => {
@@ -218,12 +226,14 @@ test("db.sql: placeholders follow the runtime's style; values are never SQL text
     ["batch", [{ sql: "DELETE FROM t WHERE id = $1", params: [2] }, { sql: "SELECT 1", params: [] }, { sql: "SELECT $1", params: [5] }]],
     ["run", "UPDATE t SET a = ? WHERE b = ?", 1, 2],
   ]);
+  // @ts-expect-error -- misuse on purpose: called as a function, not a tag
   assert.throws(() => sdk.db.sql("SELECT 1"), /tagged template/);
   assert.throws(() => sdk.db.sql`SELECT '\unicode'`, /invalid escape/);
   await withRuntime({ contract: 1, runtime: "sqlite", env }, async () => {
+    // @ts-expect-error -- misuse on purpose: params not an array
     await assert.rejects(sdk.db.batch([{ sql: "SELECT ?", params: "abc" }]), /statement 1: params must be an array/);
     // a query from another copy of the SDK (bundled by a dependency) is still a query
-    const other = await import(`../sdk/index.js?copy=2`);
+    const other = (await import(new URL("../sdk/index.js?copy=2", import.meta.url).href)) as typeof sdk; // dist/sdk
     assert.notEqual(other.db, sdk.db);
     calls.length = 0;
     await sdk.db.query(sdk.db.sql`SELECT * FROM t WHERE ${other.db.sql`a = ${1}`}`);
@@ -233,13 +243,14 @@ test("db.sql: placeholders follow the runtime's style; values are never SQL text
 });
 
 test("secrets: live record access, read-only", async () => {
-  const env = { secrets: Object.freeze({ A: "1" }) };
+  const env: { secrets: Readonly<Record<string, string>> } = { secrets: Object.freeze({ A: "1" }) };
   await withRuntime({ contract: 1, env }, () => {
     assert.deepEqual({ ...sdk.secrets }, { A: "1" });
     assert.equal(JSON.stringify(sdk.secrets), '{"A":"1"}');
     env.secrets = Object.freeze({ B: "2" }); // `cresslet dev` reloads .env.cresslet this way
     assert.equal(sdk.secrets.get("B"), "2");
     assert.equal(sdk.secrets.A, undefined);
+    // @ts-expect-error -- misuse on purpose: secrets are read-only
     assert.throws(() => (sdk.secrets.B = "x"), TypeError);
     assert.throws(() => Object.freeze(sdk.secrets), TypeError);
     assert.deepEqual(Object.keys(sdk.secrets), ["B"]); // still works after a failed freeze
@@ -250,7 +261,7 @@ test("cresslet build bundles the SDK into the server (no imports left, no CLI co
   const dir = project(`import { db, secrets } from "cresslet";
 export default { async fetch() { return Response.json(await db.query(db.sql\`SELECT \${secrets.get("A")} AS a\`)); } };`);
   const { serverFile } = await build(dir);
-  const code = fs.readFileSync(serverFile, "utf8");
+  const code = fs.readFileSync(serverFile!, "utf8"); // (the project has a server)
   assert.doesNotMatch(code, /\bimport\b[^(]/);
   assert.doesNotMatch(code, /esbuild|node:/);
   assert.match(code, /cresslet\.runtime/);

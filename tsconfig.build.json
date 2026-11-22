@@ -1,0 +1,9 @@
+{
+  // `npm run build`: dist/{bin,lib,sdk} (published, with declarations) and dist/test (what `npm test` runs).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true
+  },
+  "include": ["bin/*.ts", "lib/*.ts", "sdk/*.ts", "test/*.ts"]
+}

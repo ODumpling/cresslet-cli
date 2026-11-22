@@ -2,20 +2,31 @@
 // local <script type="module" src> and <link rel="stylesheet" href> outside public/ are bundled.
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn, type StdioOptions } from "node:child_process";
 import * as esbuild from "esbuild";
-import { CliError } from "./util.js";
-import { frontendPlugins, htmlEnv, resolveConditions } from "./frontend.js";
+import { CliError, type ProjectConfig } from "./util.ts";
+import { frontendPlugins, htmlEnv, resolveConditions } from "./frontend.ts";
 
 const ASSET_EXT = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico", ".woff", ".woff2",
   ".ttf", ".otf", ".mp3", ".mp4", ".webm", ".wav"];
 
 const TAG_RE = /<script\b[^>]*\btype=["']module["'][^>]*>\s*<\/script>|<link\b[^>]*\brel=["']stylesheet["'][^>]*>/gi;
-const ATTR_RE = (name) => new RegExp(`\\b${name}=["']([^"']+)["']`, "i");
+const ATTR_RE = (name: string) => new RegExp(`\\b${name}=["']([^"']+)["']`, "i");
+
+/** A `<script type="module" src>` / `<link rel="stylesheet" href>` in index.html that the build bundles. */
+export interface HtmlEntry {
+  /** the tag as written */
+  tag: string;
+  /** its src / href */
+  ref: string;
+  /** the file it names */
+  file: string;
+  kind: "js" | "css";
+}
 
 /** Find bundleable entries in index.html. */
-export function parseHtml(html, root) {
-  const entries = [];
+export function parseHtml(html: string, root: string): HtmlEntry[] {
+  const entries: HtmlEntry[] = [];
   for (const m of html.matchAll(TAG_RE)) {
     const tag = m[0];
     const isScript = tag.toLowerCase().startsWith("<script");
@@ -36,8 +47,8 @@ export function parseHtml(html, root) {
  * .env.[mode], .env.[mode].local) and value syntax, but read through publicDotenvText first, so nothing at or after a
  * multi-line value (whose continuation lines may look like `VITE_X=…`) can be published.
  */
-export function publicEnv(root, mode) {
-  const vars = {};
+export function publicEnv(root: string, mode: string): Record<string, string | boolean> {
+  const vars: Record<string, string> = {};
   for (const f of [".env", ".env.local", `.env.${mode}`, `.env.${mode}.local`]) {
     let text;
     try {
@@ -47,14 +58,14 @@ export function publicEnv(root, mode) {
     }
     Object.assign(vars, parseEnvValues(publicDotenvText(text)));
   }
-  const env = { MODE: mode, DEV: mode === "development", PROD: mode === "production", BASE_URL: "/" };
+  const env: Record<string, string | boolean> = { MODE: mode, DEV: mode === "development", PROD: mode === "production", BASE_URL: "/" };
   for (const [k, v] of Object.entries({ ...vars, ...process.env })) {
-    if (k.startsWith("CRESSLET_PUBLIC_") || k.startsWith("VITE_")) env[k] = v;
+    if (k.startsWith("CRESSLET_PUBLIC_") || k.startsWith("VITE_")) env[k] = v as string; // (process.env: strings)
   }
   return env;
 }
 
-function hasTsconfigJsx(root) {
+function hasTsconfigJsx(root: string): boolean {
   try {
     return /"jsx"\s*:/.test(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8"));
   } catch {
@@ -63,7 +74,11 @@ function hasTsconfigJsx(root) {
 }
 
 /** esbuild options for the client; `plugins`: frontendPlugins(root).plugins (Sass, Tailwind, SFCs, ...). */
-export function clientOptions(root, entries, { dev, outdir, plugins = [] }) {
+export function clientOptions(
+  root: string,
+  entries: HtmlEntry[],
+  { dev, outdir, plugins = [] }: { dev: boolean; outdir: string; plugins?: esbuild.Plugin[] },
+): esbuild.BuildOptions & { metafile: true } {
   const mode = dev ? "development" : "production";
   const conditions = resolveConditions(root, mode);
   return {
@@ -106,13 +121,13 @@ export function clientOptions(root, entries, { dev, outdir, plugins = [] }) {
 }
 
 /** index.html as built: `%VITE_X%` / `%CRESSLET_PUBLIC_X%` / `%MODE%` replaced from the public env. */
-export function readIndexHtml(root, mode) {
+export function readIndexHtml(root: string, mode: string): string {
   return htmlEnv(fs.readFileSync(path.join(root, "index.html"), "utf8"), publicEnv(root, mode));
 }
 
 /** Rewrite index.html to point at built outputs. */
-export function rewriteHtml(html, entries, metafile, outdir, root) {
-  const byEntry = new Map();
+export function rewriteHtml(html: string, entries: HtmlEntry[], metafile: esbuild.Metafile, outdir: string, root: string): string {
+  const byEntry = new Map<string, { js: string; css: string | null }>();
   for (const [out, info] of Object.entries(metafile.outputs)) {
     if (!info.entryPoint) continue;
     byEntry.set(path.resolve(root, info.entryPoint), {
@@ -122,7 +137,7 @@ export function rewriteHtml(html, entries, metafile, outdir, root) {
         : null,
     });
   }
-  const css = [];
+  const css: string[] = [];
   for (const e of entries) {
     const o = byEntry.get(path.resolve(e.file));
     if (!o) continue;
@@ -141,14 +156,14 @@ export function rewriteHtml(html, entries, metafile, outdir, root) {
   return html;
 }
 
-export function serverEntry(root) {
+export function serverEntry(root: string): string | null {
   for (const f of ["server/index.ts", "server/index.tsx", "server/index.js", "server/index.mjs"]) {
     if (fs.existsSync(path.join(root, f))) return path.join(root, f);
   }
   return null;
 }
 
-export function serverOptions(root, entry, outfile, { dev = false } = {}) {
+export function serverOptions(root: string, entry: string, outfile: string, { dev = false }: { dev?: boolean } = {}): esbuild.BuildOptions {
   return {
     absWorkingDir: root,
     entryPoints: [entry],
@@ -167,14 +182,16 @@ export function serverOptions(root, entry, outfile, { dev = false } = {}) {
   };
 }
 
-function copyDir(src, dest) {
+function copyDir(src: string, dest: string): void {
   if (!fs.existsSync(src)) return;
   fs.cpSync(src, dest, { recursive: true });
 }
 
-export function formatEsbuildError(e) {
-  if (!e.errors?.length) return e.message;
-  return e.errors.map((m) =>
+/** esbuild's errors (a BuildFailure, a result, or `{ errors: warnings }`) as text; anything else thrown: its message. */
+export function formatEsbuildError(e: unknown): string {
+  const { errors, message } = e as { errors?: esbuild.Message[]; message: string };
+  if (!errors?.length) return message;
+  return errors.map((m) =>
     m.location ? `${m.location.file}:${m.location.line}:${m.location.column}: ${m.text}` : m.text
   ).join("\n");
 }
@@ -185,21 +202,30 @@ export function formatEsbuildError(e) {
  * (served as-is); `server` is the fetch-handler module it writes (`export default { fetch }`), bundled with its
  * imports into the one server.js the platform runs; `dev` is what `cresslet dev` runs. Null when there's none.
  */
-export function frameworkBuild(config) {
+export interface FrameworkBuild {
+  command: string;
+  static: string;
+  server: string | null;
+  dev: string | null;
+}
+
+export function frameworkBuild(config: ProjectConfig | null | undefined): FrameworkBuild | null {
   const b = config?.build;
   if (b === undefined || b === null) return null;
-  const str = (v) => typeof v === "string" && v.trim() !== "";
-  if (typeof b !== "object" || Array.isArray(b) || !str(b.command) || !str(b.static)) {
+  const str = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
+  const o = b as Record<string, unknown>; // (an object: checked next)
+  if (typeof b !== "object" || Array.isArray(b) || !str(o.command) || !str(o.static)) {
     throw new CliError('cresslet.json "build" must be { "command": "…", "static": "<dir>", "server"?: "<file>", "dev"?: "…" }');
   }
   for (const k of ["server", "dev"]) {
-    if (b[k] !== undefined && !str(b[k])) throw new CliError(`cresslet.json "build.${k}" must be a non-empty string`);
+    if (o[k] !== undefined && !str(o[k])) throw new CliError(`cresslet.json "build.${k}" must be a non-empty string`);
   }
-  return { command: b.command, static: b.static, server: b.server ?? null, dev: b.dev ?? null };
+  // server / dev: strings or absent (checked above)
+  return { command: o.command, static: o.static, server: (o.server as string | undefined) ?? null, dev: (o.dev as string | undefined) ?? null };
 }
 
 /** A path from cresslet.json, inside the project (not .cresslet/, node_modules/, .git/). */
-function projectPath(root, rel, what) {
+function projectPath(root: string, rel: string, what: string): string {
   const abs = path.resolve(root, rel);
   const inside = path.relative(root, abs);
   if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) {
@@ -211,7 +237,11 @@ function projectPath(root, rel, what) {
 }
 
 /** Runs a cresslet.json command in the project (its node_modules/.bin on PATH); output goes to stderr. */
-export function runCommand(command, root, { env = {}, stdio = ["ignore", 2, 2] } = {}) {
+export function runCommand(
+  command: string,
+  root: string,
+  { env = {}, stdio = ["ignore", 2, 2] }: { env?: Record<string, string>; stdio?: StdioOptions } = {},
+): { child: ChildProcess; done: Promise<number> } {
   const bin = path.join(root, "node_modules", ".bin");
   const child = spawn(command, {
     cwd: root,
@@ -219,14 +249,14 @@ export function runCommand(command, root, { env = {}, stdio = ["ignore", 2, 2] }
     stdio,
     env: { ...process.env, ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` },
   });
-  const done = new Promise((resolve, reject) => {
+  const done = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("exit", (code, signal) => resolve(signal ? 128 : code ?? 0));
   });
   return { child, done };
 }
 
-async function buildFramework(root, fw) {
+async function buildFramework(root: string, fw: FrameworkBuild): Promise<BuildOutput> {
   const outDir = projectPath(root, fw.static, "build.static");
   const entry = fw.server ? projectPath(root, fw.server, "build.server") : null;
   const code = await runCommand(fw.command, root, { env: { NODE_ENV: "production" } }).done;
@@ -248,8 +278,17 @@ async function buildFramework(root, fw) {
   return { outDir, serverFile, files: listFiles(outDir, { skip: notStatic }) };
 }
 
+export interface BuildOutput {
+  /** the static site */
+  outDir: string;
+  /** the bundled server (.cresslet/build/server.js), if the app has one */
+  serverFile: string | null;
+  /** outDir's files, relative, `/`-separated */
+  files: string[];
+}
+
 /** Production build → { outDir, serverFile|null, files }. `config`: cresslet.json (its `build`, if any). */
-export async function build(root, { outDir = path.join(root, "dist"), config } = {}) {
+export async function build(root: string, { outDir = path.join(root, "dist"), config }: { outDir?: string; config?: ProjectConfig } = {}): Promise<BuildOutput> {
   const fw = frameworkBuild(config);
   if (fw) return buildFramework(root, fw);
   const htmlFile = path.join(root, "index.html");
@@ -294,9 +333,9 @@ export async function build(root, { outDir = path.join(root, "dist"), config } =
 }
 
 /** `skip(rel, isDir)`: leave a file or a whole directory out. */
-export function listFiles(dir, { skip } = {}) {
-  const out = [];
-  const walk = (d) => {
+export function listFiles(dir: string, { skip }: { skip?: ((rel: string, isDir: boolean) => unknown) | undefined } = {}): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, e.name);
       if (skip?.(path.relative(dir, full).split(path.sep).join("/"), e.isDirectory())) continue;
@@ -312,8 +351,8 @@ export function listFiles(dir, { skip } = {}) {
  * Project source for `cresslet deploy` (so `cresslet pull` / the studio can open it).
  * `exclude`: absolute paths left out (build output, the CLI's own config dir).
  */
-export function listSources(root, { exclude = [] } = {}) {
-  const real = (p) => {
+export function listSources(root: string, { exclude = [] }: { exclude?: string[] } = {}): string[] {
+  const real = (p: string) => {
     try {
       return fs.realpathSync(p); // e.g. macOS /var → /private/var
     } catch {
@@ -322,11 +361,11 @@ export function listSources(root, { exclude = [] } = {}) {
   };
   root = real(root);
   const skip = exclude.map(real);
-  const excluded = (abs) => skip.some((x) => abs === x || abs.startsWith(x + path.sep));
+  const excluded = (abs: string) => skip.some((x) => abs === x || abs.startsWith(x + path.sep));
   if (excluded(root)) return [];
   const ignored = gitignore(root);
-  const out = [];
-  const walk = (d) => {
+  const out: string[] = [];
+  const walk = (d: string) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, e.name);
       const rel = path.relative(root, full).split(path.sep).join("/");
@@ -342,21 +381,21 @@ export function listSources(root, { exclude = [] } = {}) {
 }
 
 /** Never served from `deploy --dir`: CLI metadata (deploy key), VCS, deps, secrets; at any depth. */
-export const notStatic = (rel, isDir) => {
+export const notStatic = (rel: string, isDir: boolean): boolean => {
   const name = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
   return isDir ? [".cresslet", ".git", "node_modules"].includes(name) : /^\.env/.test(name) || name === ".dev.vars";
 };
 
 /** A source file's contents as uploaded: dotenv files keep only public (client-exposed) entries (publicDotenvText). */
-export function readSource(root, rel) {
+export function readSource(root: string, rel: string): Buffer {
   const data = fs.readFileSync(path.join(root, rel));
   if (!DOTENV.test(rel)) return data;
   return Buffer.from(publicDotenvText(new TextDecoder().decode(data)));
 }
 
 /** The container's (Studio's) dotenv value syntax: quotes stripped, `\n` in "…", unquoted ` # comment` dropped. */
-function parseEnvValues(text) {
-  const out = {};
+function parseEnvValues(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
     const m = /^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)?\s*$/.exec(line);
     if (!m) continue;
@@ -380,8 +419,8 @@ function parseEnvValues(text) {
  * VITE_*) are kept verbatim, comments are dropped, and the first line not understood ends the file.
  */
 const SAFE_ENTRY = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][\w.-]*)[ \t]*=[ \t]*(?:[^\s"'\x60\\#][^"'\x60\\\r\n#]*|"[^"\\\r\n]*"|'[^'\\\r\n]*')[ \t]*(?:#[^"'\x60\\\r\n]*)?$/;
-export function publicDotenvText(text) {
-  const out = [];
+export function publicDotenvText(text: string): string {
+  const out: string[] = [];
   for (const l of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
     if (/[\r\u2028\u2029]/.test(l)) break; // a line break to some parsers, not to others
     if (/^[ \t]*$/.test(l)) out.push(l);
@@ -395,7 +434,7 @@ export function publicDotenvText(text) {
 }
 
 // .cresslet/ at any depth: a nested app's link holds its deploy key.
-const NOT_SOURCE = (rel) => rel === "dist" || /(^|\/)\.cresslet$/i.test(rel);
+const NOT_SOURCE = (rel: string) => rel === "dist" || /(^|\/)\.cresslet$/i.test(rel);
 // Same rules as the server (NOT_SOURCE / DOTENV in server/deploys.ts): secrets never leave the machine. Left out:
 // `.env*` directories, `.env*local*` / `.env*cresslet*` files, `.envrc*`, `.dev.vars*`.
 const SECRET_ENV = /(?:^|\/)\.env[^/]*(?:local|cresslet)[^/]*$|(?:^|\/)(?:\.envrc[^/]*|\.dev\.vars(?:[._-][^/]*)?)$/i;
@@ -404,8 +443,8 @@ const SECRET_DIR = /(?:^|\/)\.env[^/]*$/i;
 const DOTENV = /(?:^|\/)\.env[^/]*$/i;
 
 /** Simple top-level .gitignore patterns (globs, `/`-anchored, trailing `/`); negations are ignored. */
-function gitignore(root) {
-  let lines = [];
+function gitignore(root: string): (rel: string, isDir: boolean) => boolean {
+  let lines: string[] = [];
   try {
     lines = fs.readFileSync(path.join(root, ".gitignore"), "utf8").split(/\r?\n/);
   } catch { /* none */ }
@@ -418,5 +457,5 @@ function gitignore(root) {
       .replace(/\0/g, "(?:.*/)?").replace(/\x01/g, ".*");
     return { dirOnly, re: new RegExp(anchored ? `^${re}$` : `(^|/)${re}$`) };
   });
-  return (rel, isDir) => rules.some((r) => (isDir || !r.dirOnly) && r.re.test(rel));
+  return (rel: string, isDir: boolean) => rules.some((r) => (isDir || !r.dirOnly) && r.re.test(rel));
 }

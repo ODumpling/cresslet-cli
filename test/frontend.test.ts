@@ -6,14 +6,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build, listSources, publicDotenvText, publicEnv, readSource } from "../lib/build.js";
-import { dev } from "../lib/dev.js";
-import { extractCandidates, globToRegExp, htmlEnv, scanSources } from "../lib/frontend.js";
+import { build, listSources, publicDotenvText, publicEnv, readSource } from "../lib/build.ts";
+import { dev } from "../lib/dev.ts";
+import { extractCandidates, globToRegExp, htmlEnv, scanSources, type TailwindSources } from "../lib/frontend.ts";
 
-const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// Runs compiled, from dist/test/ (npm test): the repo is two levels up.
+const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
 /** A project in a temp dir; `modules`: link this repo's node_modules (tailwindcss, sass, less, vue, svelte, postcss). */
-function project(files, { modules = true } = {}) {
+function project(files: Record<string, string>, { modules = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-fe-"));
   if (modules) fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"), "dir");
   for (const [rel, text] of Object.entries(files)) {
@@ -22,11 +23,11 @@ function project(files, { modules = true } = {}) {
   }
   return dir;
 }
-const html = (head, body = "") =>
+const html = (head: string, body = "") =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
-const pkg = (deps) => JSON.stringify({ name: "x", type: "module", dependencies: deps });
-const read = (dir, rel) => fs.readFileSync(path.join(dir, rel), "utf8");
-const outputs = (dir, ext) =>
+const pkg = (deps: Record<string, string>) => JSON.stringify({ name: "x", type: "module", dependencies: deps });
+const read = (dir: string, rel: string) => fs.readFileSync(path.join(dir, rel), "utf8");
+const outputs = (dir: string, ext: string) =>
   fs.readdirSync(path.join(dir, "dist", "assets")).filter((f) => f.endsWith(ext)).map((f) => read(dir, `dist/assets/${f}`)).join("\n");
 
 // ---- dotenv sanitizer
@@ -264,9 +265,9 @@ test("build: an https ?url import stays external; compiler warnings are printed"
     "src/a.css": ".a { color: red }\n",
     "src/main.js": 'import u from "https://cdn.example.com/x.js?url";\nwindow.u = u;\n',
   });
-  const warned = [];
+  const warned: string[] = [];
   const orig = console.warn;
-  console.warn = (...a) => warned.push(a.join(" "));
+  console.warn = (...a: unknown[]) => warned.push(a.join(" "));
   try {
     await build(dir);
   } finally {
@@ -316,13 +317,13 @@ test("dev: Tailwind classes added to a source (even a new file) rebuild the styl
   });
   const s = await dev({ root: dir, config: {} }, { port: 0, log: () => {} });
   try {
-    const get = async (p) => (await fetch(s.url + p)).text();
+    const get = async (p: string) => (await fetch(s.url + p)).text();
     const page = await get("/");
     assert.match(page, /<title>dev-app<\/title>/);
     const css = () => get("/assets/src/style.css.css");
     assert.match(page, /href="\/assets\/src\/style\.css\.css"/);
     assert.ok((await css()).includes("text-sky-500"));
-    const bundleCss = await get(page.match(/href="(\/assets\/src\/main\.css)"/)[1]);
+    const bundleCss = await get(page.match(/href="(\/assets\/src\/main\.css)"/)![1]);
     assert.match(bundleCss, /p\[data-v-[0-9a-f]{8}\]/);
     fs.writeFileSync(path.join(dir, "src/parts/new.html"), '<b class="bg-lime-400"></b>');
     let ok = false;
@@ -345,7 +346,7 @@ test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in th
   }, { modules: false });
   const s = await dev({ root: dir, config: {} }, { port: 0, log: () => {} });
   try {
-    const get = async (p) => (await fetch(s.url + p)).text();
+    const get = async (p: string) => (await fetch(s.url + p)).text();
     assert.match(await get("/"), /<title>first<\/title>/);
     // a burst of saves (editors fire several events): setups run one at a time, the last value wins
     for (const v of ["burst1", "burst2", "second"]) {
@@ -357,13 +358,13 @@ test("dev: editing .env updates %VITE_X% in index.html and import.meta.env in th
     for (let i = 0; i < 150 && !ok; i++) {
       await new Promise((r) => setTimeout(r, 100));
       const page = await get("/");
-      ok = /<title>second<\/title>/.test(page) && (await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"');
+      ok = /<title>second<\/title>/.test(page) && (await get(page.match(/src="(\/assets\/[^"]+\.js)"/)![1])).includes('"second"');
     }
     assert.ok(ok, "html and bundle updated");
     await new Promise((r) => setTimeout(r, 500)); // nothing older lands after it
     const page = await get("/");
     assert.match(page, /<title>second<\/title>/);
-    assert.ok((await get(page.match(/src="(\/assets\/[^"]+\.js)"/)[1])).includes('"second"'));
+    assert.ok((await get(page.match(/src="(\/assets\/[^"]+\.js)"/)![1])).includes('"second"'));
   } finally {
     await s.close();
   }
@@ -381,7 +382,7 @@ test("extractCandidates / globToRegExp / htmlEnv", () => {
 
 test("scanSources: source(none), @source paths and @source not", () => {
   const dir = project({ "a/x.html": "flex", "b/y.html": "grid", "b/skip.html": "hidden", "node_modules/z.js": "" }, { modules: false });
-  const rules = [{ root: "none", sources: [{ base: dir, pattern: "b", negated: false }, { base: dir, pattern: "b/skip.html", negated: true }] }];
+  const rules: TailwindSources[] = [{ root: "none", sources: [{ base: dir, pattern: "b", negated: false }, { base: dir, pattern: "b/skip.html", negated: true }] }];
   const { candidates } = scanSources(rules, dir);
   assert.ok(candidates.includes("grid"));
   assert.ok(!candidates.includes("flex") && !candidates.includes("hidden"));

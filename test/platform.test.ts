@@ -4,44 +4,59 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { loadProject } from "../lib/util.js";
-import { dev } from "../lib/dev.js";
+import { loadProject } from "../lib/util.ts";
+import { dev } from "../lib/dev.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(HERE, "..", "bin", "cresslet.js");
+// Runs compiled, from dist/test/ (npm test): the built CLI is dist/bin/cresslet.js, the fixture in the repo's test/.
+const CLI = fileURLToPath(new URL("../bin/cresslet.js", import.meta.url));
+const FIXTURE = fileURLToPath(new URL("../../test/fixture", import.meta.url));
 const run = promisify(execFile);
+/** What a failed `run` rejects with. */
+type ExecError = Error & { code?: number; stdout: string; stderr: string };
 
 function copyFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
-  fs.cpSync(path.join(HERE, "fixture"), dir, { recursive: true });
+  fs.cpSync(FIXTURE, dir, { recursive: true });
   return dir;
 }
 
+/**
+ * JSON as the CLI sent it to the fake API, or as a route answers. Unchecked: the untyped boundary of these tests
+ * (each test reads the fields it asserts on).
+ */
+type Wire = any;
+type Route = (body: Wire, url: URL) => Wire;
+/** A file in a deploy / upload body. */
+type WireFile = { path: string; data: string; encoding: BufferEncoding };
+/** The globals these tests look at: the dev server's WebSocket polyfill, and one a test app sets. */
+const globals = globalThis as typeof globalThis & { WebSocketPair?: typeof WebSocketPair; lastCron?: string };
+
 /** Fake Cresslet API: `routes["METHOD /path"] = (body, url) => json` (`$status` sets the status); records every request. */
-async function fakeApi(routes) {
-  const calls = [];
+async function fakeApi(routes: Record<string, Route | undefined>) {
+  const calls: Wire[] = []; // { method, path, body, headers }
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const c of req) raw += c;
-    const url = new URL(req.url, "http://x");
+    const url = new URL(req.url!, "http://x");
     const body = raw ? JSON.parse(raw) : undefined;
-    calls.push({ method: req.method, path: url.pathname + url.search, body, headers: req.headers });
+    calls.push({ method: req.method!, path: url.pathname + url.search, body, headers: req.headers });
     const h = routes[`${req.method} ${url.pathname}`];
     const { $status = h ? 200 : 404, ...json } = h ? h(body, url) : { error: "not_found", message: "not found" };
     res.writeHead($status, { "content-type": "application/json" });
     res.end(JSON.stringify(json));
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, close: () => new Promise((r) => server.close(r)) };
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, close: () => new Promise((r) => server.close(r)) };
 }
 
-const cliEnv = (env) => (cwd, api, ...args) =>
-  run(process.execPath, [CLI, ...args, "--api", api.url ?? api], {
+const cliEnv = (env: Record<string, string>) => (cwd: string, api: { url: string } | string, ...args: string[]) =>
+  run(process.execPath, [CLI, ...args, "--api", typeof api === "string" ? api : api.url], {
     cwd,
     env: { ...process.env, CRESSLET_TOKEN: "tok", CRESSLET_CONFIG_DIR: path.join(cwd, ".cfg-test"), NO_COLOR: "1", ...env },
   });
@@ -69,16 +84,16 @@ test("deploy sends crons and project source (minus deps, build output, secrets, 
     await cli(dir, api, "deploy");
     const { body } = api.calls.find((c) => c.path === "/v1/deploys");
     assert.deepEqual(body.config, { routes: ["/api/*"], crons: ["*/5 * * * *"] });
-    const paths = body.sources.map((s) => s.path);
+    const paths = body.sources.map((s: WireFile) => s.path);
     for (const p of ["cresslet.json", "index.html", "server/index.ts", "src/main.ts", "src/logo.bin", ".gitignore"]) {
       assert.ok(paths.includes(p), `missing ${p} in ${paths}`);
     }
     for (const p of paths) assert.doesNotMatch(p, /^(node_modules|dist|\.cresslet|logs)\/|secret|\.log$|\.env\.cresslet|\.cfg-test|\.local$/);
     for (const p of [".env", ".env.production"]) {
-      const f = body.sources.find((s) => s.path === p);
+      const f = body.sources.find((s: WireFile) => s.path === p);
       assert.equal(Buffer.from(f.data, f.encoding).toString(), "VITE_A=1\nexport CRESSLET_PUBLIC_B=2\n", p); // comments dropped (as the server)
     }
-    const bin = body.sources.find((s) => s.path === "src/logo.bin");
+    const bin = body.sources.find((s: WireFile) => s.path === "src/logo.bin");
     assert.deepEqual([...Buffer.from(bin.data, bin.encoding)], [0, 255, 1]);
 
     await cli(dir, api, "deploy", "--no-source");
@@ -147,9 +162,9 @@ test("deploy --dir leaves the output dir out of the source; a static folder uplo
   try {
     await cli(dir, api, "deploy", "--dir", "out");
     const { files, sources } = api.calls.at(-1).body;
-    assert.deepEqual(files.map((f) => f.path), ["index.html"]);
-    assert.ok(sources.some((s) => s.path === "cresslet.json"));
-    assert.ok(!sources.some((s) => s.path.startsWith("out/")), sources.map((s) => s.path).join());
+    assert.deepEqual(files.map((f: WireFile) => f.path), ["index.html"]);
+    assert.ok(sources.some((s: WireFile) => s.path === "cresslet.json"));
+    assert.ok(!sources.some((s: WireFile) => s.path.startsWith("out/")), sources.map((s: WireFile) => s.path).join());
 
     const site = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-static-"));
     fs.writeFileSync(path.join(site, "index.html"), "<p>hi</p>");
@@ -187,7 +202,7 @@ test("pull writes the source (utf8 + base64), links the app, refuses a non-empty
   }
 });
 
-const sourceApi = (files, app = "a") => fakeApi({
+const sourceApi = (files: (string | { path: string; data: string; encoding: string })[], app = "a") => fakeApi({
   [`GET /v1/apps/${app}/source`]: () => ({ app, deployId: "dep_1", files: files.map((p) => (typeof p === "string" ? { path: p, data: "x", encoding: "utf8" } : p)) }),
 });
 
@@ -232,8 +247,8 @@ test("pull: deploy key only for the same app + API; no stale key on relink; stat
     "GET /v1/apps/a/source": () => ({ app: "a", deployId: "dep_1", files: [{ path: "cresslet.json", data: '{"name":"a"}', encoding: "utf8" }] }),
     "GET /v1/apps/s/source": () => ({ app: "s", deployId: "dep_1", files: [{ path: "index.html", data: "<p>s</p>", encoding: "utf8" }] }),
   });
-  const link = (d) => JSON.parse(fs.readFileSync(path.join(d, ".cresslet", "app.json"), "utf8"));
-  const setLink = (d, l) => {
+  const link = (d: string) => JSON.parse(fs.readFileSync(path.join(d, ".cresslet", "app.json"), "utf8"));
+  const setLink = (d: string, l: object) => {
     fs.mkdirSync(path.join(d, ".cresslet"), { recursive: true });
     fs.writeFileSync(path.join(d, ".cresslet", "app.json"), JSON.stringify(l));
   };
@@ -281,7 +296,7 @@ test("domains / egress --app work outside a project", async () => {
 test("domains: list / add (prints DNS records) / verify / rm", async () => {
   const dir = copyFixture();
   fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
-  const view = (verified) => ({
+  const view = (verified: boolean) => ({
     domain: "ex.com",
     verified,
     dns: [{ type: "CNAME", name: "ex.com", value: "a.cresslet.test" }, { type: "TXT", name: "_cresslet.ex.com", value: "tok123" }],
@@ -377,7 +392,7 @@ export default {
 };
 `;
 
-async function devWith(server, log = () => {}) {
+async function devWith(server: string, log: (message: string) => void = () => {}) {
   const dir = copyFixture();
   fs.writeFileSync(path.join(dir, "server", "index.ts"), server);
   return dev(loadProject(dir), { port: 0, log });
@@ -387,7 +402,7 @@ test("dev: POST /__cresslet/scheduled runs the scheduled() export", async () => 
   const d = await devWith(SERVER);
   try {
     const cron = encodeURIComponent("*/5 * * * *");
-    const post = (c, headers = { "x-cresslet-dev": "1" }) => fetch(`${d.url}/__cresslet/scheduled?cron=${c}`, { method: "POST", headers });
+    const post = (c: string, headers: Record<string, string> = { "x-cresslet-dev": "1" }) => fetch(`${d.url}/__cresslet/scheduled?cron=${c}`, { method: "POST", headers });
     assert.equal((await fetch(`${d.url}/__cresslet/scheduled?cron=${cron}`)).status, 405);
     // Without the header (what a cross-site form/fetch "simple" request would send): refused, not run.
     assert.equal((await post(cron, { "content-type": "text/plain" })).status, 403);
@@ -411,7 +426,7 @@ test("dev: WebSocketPair upgrades are bridged (text, binary, close code; non-101
   const d = await devWith(SERVER);
   try {
     const ws = new WebSocket(d.url.replace("http", "ws") + "/api/ws");
-    const next = () => new Promise((r) => ws.once("message", (data, isBinary) => r(isBinary ? [...data] : data.toString())));
+    const next = () => new Promise((r) => ws.once("message", (data: Buffer, isBinary) => r(isBinary ? [...data] : data.toString())));
     await new Promise((r, j) => ws.once("open", r).once("error", j));
     ws.send("hi");
     assert.equal(await next(), "echo hi");
@@ -439,7 +454,7 @@ test("dev: WebSocketPair upgrades are bridged (text, binary, close code; non-101
 });
 
 test("dev: a throwing (sync or async) WebSocket listener is logged, the server keeps running", async () => {
-  const logs = [];
+  const logs: string[] = [];
   const d = await devWith(SERVER, (m) => logs.push(m));
   try {
     const ws = new WebSocket(d.url.replace("http", "ws") + "/api/ws");
@@ -469,7 +484,7 @@ test("dev: Response stays instanceof-compatible, a 101 without upgrade is a 500,
     await d.close();
   }
   assert.equal(globalThis.Response, NativeResponse);
-  assert.equal(globalThis.WebSocketPair, undefined);
+  assert.equal(globals.WebSocketPair, undefined);
 });
 
 // ---------------------------------------------------------------- review round 2
@@ -484,10 +499,10 @@ test("deploy source: .cresslet/ at any depth, .envrc, .dev.vars left out; commen
   try {
     await cli(dir, api, "deploy");
     const { sources } = api.calls.at(-1).body;
-    const paths = sources.map((s) => s.path);
+    const paths = sources.map((s: WireFile) => s.path);
     assert.ok(paths.includes("nested/index.html"), paths.join());
     for (const p of paths) assert.doesNotMatch(p, /(^|\/)(\.cresslet\/|\.envrc$|\.dev\.vars$)/);
-    const env = sources.find((s) => s.path === ".env");
+    const env = sources.find((s: WireFile) => s.path === ".env");
     assert.equal(Buffer.from(env.data, env.encoding).toString(), "VITE_A=1\n\n");
   } finally {
     await api.close();
@@ -516,9 +531,9 @@ test("deploy --dir never uploads CLI metadata, secrets, .git or node_modules (an
   const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
   try {
     const { stderr } = await cli(dir, api, "deploy", "--dir", ".");
-    const paths = api.calls.at(-1).body.files.map((f) => f.path);
+    const paths = api.calls.at(-1).body.files.map((f: WireFile) => f.path);
     for (const f of skipped) assert.ok(!paths.includes(f), f);
-    assert.ok(!paths.some((p) => /(^|\/)(\.cresslet|\.git|node_modules)\//.test(p)), paths.join());
+    assert.ok(!paths.some((p: string) => /(^|\/)(\.cresslet|\.git|node_modules)\//.test(p)), paths.join());
     assert.ok(paths.includes("sub/ok.txt") && paths.includes("index.html"), paths.join());
     assert.equal(stderr.match(/not uploaded/g)?.length, 1, stderr);
     assert.match(stderr, /\.cresslet\/.*\.env\b.*node_modules\//s);
@@ -551,8 +566,8 @@ test("pull --dir works through a symlinked ancestor (macOS /tmp); a symlink at o
 
 test("pull refuses a destination that is a symlink", async () => {
   for (const mk of [
-    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a"]; },
-    (cwd, outside) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a", "--dir", "a"]; },
+    (cwd: string, outside: string) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a"]; },
+    (cwd: string, outside: string) => { fs.symlinkSync(outside, path.join(cwd, "a")); return ["pull", "a", "--dir", "a"]; },
   ]) {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-pull-"));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-outside-"));
@@ -638,22 +653,22 @@ test("domains / egress --app <other>: the project's deploy key isn't sent", asyn
 test("dev: a failed startup restores the globals", async () => {
   const NativeResponse = globalThis.Response;
   const busy = http.createServer();
-  await new Promise((r) => busy.listen(0, "localhost", r));
+  await new Promise<void>((r) => busy.listen(0, "localhost", r));
   try {
     const dir = copyFixture();
     fs.writeFileSync(path.join(dir, "server", "index.ts"), SERVER);
-    await assert.rejects(dev(loadProject(dir), { port: busy.address().port, log: () => {} }), /EADDRINUSE/);
+    await assert.rejects(dev(loadProject(dir), { port: (busy.address() as AddressInfo).port, log: () => {} }), /EADDRINUSE/);
     assert.equal(globalThis.Response, NativeResponse);
-    assert.equal(globalThis.WebSocketPair, undefined);
+    assert.equal(globals.WebSocketPair, undefined);
   } finally {
     await new Promise((r) => busy.close(r));
   }
 });
 
 test("Response shim: instanceof compat only for the shim itself; error reporter reset on uninstall", async () => {
-  const { installWebSocketPolyfill } = await import("../lib/websocket.js");
+  const { installWebSocketPolyfill } = await import("../lib/websocket.ts");
   const NativeResponse = globalThis.Response;
-  const seen = [];
+  const seen: string[] = [];
   let uninstall = installWebSocketPolyfill({ onListenerError: (type) => seen.push(type) });
   try {
     const Shim = globalThis.Response;
@@ -667,11 +682,11 @@ test("Response shim: instanceof compat only for the shim itself; error reporter 
     uninstall();
   }
   uninstall = installWebSocketPolyfill();
-  const errors = [];
+  const errors: unknown[][] = [];
   const orig = console.error;
-  console.error = (...a) => errors.push(a);
+  console.error = (...a: unknown[]) => errors.push(a);
   try {
-    const [a, b] = Object.values(new globalThis.WebSocketPair());
+    const [a, b] = Object.values(new globals.WebSocketPair!()) as WebSocketPair[1][];
     a.accept();
     b.accept();
     a.addEventListener("message", () => { throw new Error("x"); });
@@ -717,18 +732,18 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
   try {
     await cli(dir, api, "deploy");
     const { sources } = api.calls.at(-1).body;
-    const paths = sources.map((s) => s.path);
+    const paths = sources.map((s: WireFile) => s.path);
     assert.ok(paths.includes("sub/ok.txt"), paths.join());
     for (const f of secret) assert.ok(!paths.includes(f), f);
-    const env = sources.find((s) => s.path === "sub/.ENV");
+    const env = sources.find((s: WireFile) => s.path === "sub/.ENV");
     assert.equal(Buffer.from(env.data, env.encoding).toString(), "VITE_A=1\n");
-    const backup = sources.find((s) => s.path === "sub/.ENV_BACKUP");
+    const backup = sources.find((s: WireFile) => s.path === "sub/.ENV_BACKUP");
     assert.equal(Buffer.from(backup.data, backup.encoding).toString(), "VITE_B=1\n"); // any .env-style name is sanitized
-    const code = sources.find((s) => s.path === "sub/.environment.js");
+    const code = sources.find((s: WireFile) => s.path === "sub/.environment.js");
     assert.equal(Buffer.from(code.data, code.encoding).toString(), ""); // any .env* name, as the server sanitizes it
 
     await cli(dir, api, "deploy", "--dir", "sub");
-    const files = api.calls.at(-1).body.files.map((f) => f.path);
+    const files = api.calls.at(-1).body.files.map((f: WireFile) => f.path);
     assert.deepEqual(files, ["ok.txt"]);
 
     const n = api.calls.length;
@@ -747,14 +762,14 @@ test("deploy filters match names case-insensitively; --dir inside .cresslet/.git
 });
 
 test("dev: a failed startup while another dev runs restores that instance's WebSocket error reporter", async () => {
-  const logs = { a: [], b: [] };
+  const logs: { a: string[]; b: string[] } = { a: [], b: [] };
   const a = await devWith(SERVER, (m) => logs.a.push(m));
   try {
     const dir = copyFixture();
     fs.writeFileSync(path.join(dir, "server", "index.ts"), SERVER);
-    const port = new URL(a.url).port;
+    const port = Number(new URL(a.url).port);
     await assert.rejects(dev(loadProject(dir), { port, log: (m) => logs.b.push(m) }), /EADDRINUSE/);
-    const [x, y] = Object.values(new globalThis.WebSocketPair());
+    const [x, y] = Object.values(new globals.WebSocketPair!()) as WebSocketPair[1][];
     x.accept();
     y.accept();
     x.addEventListener("message", () => { throw new Error("boom"); });
@@ -778,8 +793,8 @@ test("page: upload a file or folder with settings, set / update / open / rm; set
   fs.writeFileSync(path.join(dir, "readme.txt"), "x");
   fs.mkdirSync(path.join(dir, "noindex"));
   fs.writeFileSync(path.join(dir, "noindex/a.html"), "x");
-  const page = (over = {}) => ({ id: "app_1", name: "pg-1", title: "notes", url: "http://pg-1.x", visibility: "link", retentionDays: 7, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...over });
-  const settings = (pages) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
+  const page = (over: Wire = {}) => ({ id: "app_1", name: "pg-1", title: "notes", url: "http://pg-1.x", visibility: "link", retentionDays: 7, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...over });
+  const settings = (pages: Wire) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
   const api = await fakeApi({
     "POST /v1/pages": (b) => ({ $status: 201, page: page({ title: b.title }) }),
     "GET /v1/pages": () => ({ pages: [page(), page({ name: "pg-2", title: null, retentionDays: null, expiresAt: null })] }),
@@ -801,15 +816,15 @@ test("page: upload a file or folder with settings, set / update / open / rm; set
     assert.equal(up.title, "Site");
     assert.equal(up.visibility, "public");
     assert.equal(up.retentionDays, null);
-    assert.deepEqual(up.files.map((f) => f.path).sort(), ["img/a.png", "index.html"]);
-    assert.equal(Buffer.from(up.files.find((f) => f.path === "img/a.png").data, "base64").length, 2);
+    assert.deepEqual(up.files.map((f: WireFile) => f.path).sort(), ["img/a.png", "index.html"]);
+    assert.equal(Buffer.from(up.files.find((f: WireFile) => f.path === "img/a.png").data, "base64").length, 2);
     for (const [args, msg] of [
       [["upload", "readme.txt"], /isn't an \.html file/],
       [["upload", "noindex"], /has no index\.html/],
       [["upload", "notes.html", "--visibility", "secret"], /--visibility must be one of/],
       [["upload", "notes.html", "--keep", "0"], /--keep must be a number of days/],
       [["set", "pg-1"], /nothing to change/],
-    ]) await assert.rejects(cli(dir, api, "page", ...args), (e) => msg.test(e.stderr), args.join(" "));
+    ] as [string[], RegExp][]) await assert.rejects(cli(dir, api, "page", ...args), (e: ExecError) => msg.test(e.stderr), args.join(" "));
 
     assert.match((await cli(dir, api, "page", "ls")).stdout, /notes\s+link\s+until 2026-12-01\s+http:\/\/pg-1\.x\n.*pg-2\s+link\s+forever/);
     await cli(dir, api, "page", "set", "http://pg-1.x/", "--visibility", "private", "--keep", "3");
@@ -842,14 +857,14 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
   fs.writeFileSync(path.join(dir, "static/index.html"), "<h1>static</h1>");
   const proj = copyFixture();
   // Artifacts by name, as the server keeps them.
-  const pages = {};
+  const pages: Record<string, Wire> = {};
   let ids = 0;
-  const page = (p) => ({ title: "notes", url: `http://${p.name}.x`, visibility: "private", retentionDays: 30, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...p });
-  const one = (fn) => (b, url) => {
+  const page = (p: Wire) => ({ title: "notes", url: `http://${p.name}.x`, visibility: "private", retentionDays: 30, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14, ...p });
+  const one = (fn: (name: string, b: Wire) => Wire): Route => (b, url) => {
     const name = url.pathname.split("/")[3];
     return pages[name] ? fn(name, b) : { $status: 404, error: "not_found", message: `artifact not found: ${name}` };
   };
-  const routes = {
+  const routes: Record<string, Route | undefined> = {
     "POST /v1/pages": (b) => {
       const name = b.name ?? `pg-${++ids}`;
       pages[name] = page({ id: `app_${name}`, name, title: b.title, ...(b.visibility ? { visibility: b.visibility } : {}) });
@@ -858,7 +873,7 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     "POST /v1/deploys": (b) => ({ $status: 201, app: { name: b.app ?? "quiet-1", url: "http://quiet-1.x", claimed: true }, deploy: { id: "dep_1" } }),
   };
   const api = await fakeApi(new Proxy(routes, {
-    get: (t, k) => t[k] ?? (/^(GET|PUT|PATCH) \/v1\/pages\/[^/]+$/.test(k) ? one((name, b) => {
+    get: (t, k: string) => t[k] ?? (/^(GET|PUT|PATCH) \/v1\/pages\/[^/]+$/.test(k) ? one((name, b) => {
       if (k.startsWith("PATCH")) Object.assign(pages[name], b);
       return { page: pages[name] };
     }) : undefined),
@@ -887,7 +902,7 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     // A folder with --artifact and an address of your own: created under it, then updated from inside the folder.
     assert.match((await cli(dir, api, "deploy", "site", "--artifact", "--name", "my-site")).stdout, /deployed artifact my-site \(new\)/);
     assert.deepEqual(api.calls.map((c) => [c.method, c.path, c.body?.name]), [["GET", "/v1/pages/my-site", undefined], ["POST", "/v1/pages", "my-site"]]);
-    assert.deepEqual(api.calls.at(-1).body.files.map((f) => f.path), ["index.html"]);
+    assert.deepEqual(api.calls.at(-1).body.files.map((f: WireFile) => f.path), ["index.html"]);
     calls();
     assert.match((await cli(path.join(dir, "site"), api, "deploy")).stdout, /deployed artifact my-site \(updated, same link\)/);
     assert.deepEqual(calls(), [["GET", "/v1/pages/my-site"], ["PUT", "/v1/pages/my-site"]]);
@@ -908,8 +923,8 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     assert.deepEqual(calls(), [["GET", "/v1/pages/pg-2"], ["POST", "/v1/pages"]]);
     // Another account's (403): gone too, for a linked one; --name sends it to POST (the server says it's taken).
     routes["GET /v1/pages/theirs"] = () => ({ $status: 403, error: "forbidden", message: "no access" });
-    routes["POST /v1/pages"] = ((post) => (b) => (b.name === "theirs" ? { $status: 409, error: "conflict", message: "name unavailable: theirs" } : post(b)))(routes["POST /v1/pages"]);
-    await assert.rejects(cli(dir, api, "deploy", "notes.html", "--name", "theirs"), (e) => /name unavailable: theirs/.test(e.stderr));
+    routes["POST /v1/pages"] = ((post: Route): Route => (b, url) => (b.name === "theirs" ? { $status: 409, error: "conflict", message: "name unavailable: theirs" } : post(b, url)))(routes["POST /v1/pages"]!);
+    await assert.rejects(cli(dir, api, "deploy", "notes.html", "--name", "theirs"), (e: ExecError) => /name unavailable: theirs/.test(e.stderr));
     calls();
     // Redeploys go to the server it was deployed to, without --api.
     await run(process.execPath, [CLI, "deploy", "notes.html"], {
@@ -942,7 +957,7 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
     // A folder inside an app project (its build output) isn't an app of its own.
     fs.mkdirSync(path.join(proj, "dist"), { recursive: true });
     fs.writeFileSync(path.join(proj, "dist/index.html"), "<h1>built</h1>");
-    await assert.rejects(cli(proj, api, "deploy", "dist"), (e) => /dist is inside the app project \.[\s\S]*cresslet deploy dist --artifact/.test(e.stderr));
+    await assert.rejects(cli(proj, api, "deploy", "dist"), (e: ExecError) => /dist is inside the app project \.[\s\S]*cresslet deploy dist --artifact/.test(e.stderr));
     assert.ok(!api.calls.length);
     // A new artifact in a project goes to the project's server, as its app does.
     fs.mkdirSync(path.join(proj, ".cresslet"), { recursive: true });
@@ -962,9 +977,9 @@ test("deploy: an .html file or --artifact folder becomes an artifact, linked so 
       [dir, ["notes.html", "--dir", "site"], /--dir and --server are for apps/],
       [dir, ["readme.txt"], /not found: readme\.txt/],
       [dir, ["notes.html", "--name="], /--name <address>/],
-    ]) await assert.rejects(cli(cwd, api, "deploy", ...args), (e) => msg.test(e.stderr), args.join(" "));
+    ] as [string, string[], RegExp][]) await assert.rejects(cli(cwd, api, "deploy", ...args), (e: ExecError) => msg.test(e.stderr), args.join(" "));
     const anon = cliEnv({ CRESSLET_TOKEN: "" });
-    await assert.rejects(anon(dir, api, "deploy", "notes.html"), (e) => /artifacts need a login[\s\S]*cresslet login/.test(e.stderr));
+    await assert.rejects(anon(dir, api, "deploy", "notes.html"), (e: ExecError) => /artifacts need a login[\s\S]*cresslet login/.test(e.stderr));
     assert.ok(!api.calls.length, "nothing sent when refused");
   } finally {
     await api.close();
@@ -975,7 +990,7 @@ test("artifact upload --name sends the address; page is the old name of artifact
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-artifacts-"));
   fs.writeFileSync(path.join(dir, "notes.html"), "<h1>notes</h1>");
   const page = { id: "app_1", name: "q4", title: "notes", url: "http://q4.x", visibility: "link", retentionDays: 7, expiresAt: "2026-12-01T00:00:00.000Z", files: 1, bytes: 14 };
-  const settings = (pages) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
+  const settings = (pages: Wire) => ({ pages, defaults: { pages: { visibility: "private", retentionDays: 30 } } });
   const api = await fakeApi({
     "POST /v1/pages": () => ({ $status: 201, page }),
     "GET /v1/pages": () => ({ pages: [] }),
@@ -995,7 +1010,7 @@ test("artifact upload --name sends the address; page is the old name of artifact
 test("auth login: browser approval or --token; auth status / logout", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
   const { CRESSLET_TOKEN: _, ...env } = process.env;
-  const noToken = (cwd, api, ...args) => run(process.execPath, [CLI, ...args, "--api", api.url], {
+  const noToken = (cwd: string, api: { url: string }, ...args: string[]) => run(process.execPath, [CLI, ...args, "--api", api.url], {
     cwd,
     env: { ...env, CRESSLET_CONFIG_DIR: path.join(cwd, ".cfg-test"), NO_COLOR: "1" },
   });
@@ -1032,7 +1047,7 @@ test("auth login: browser approval or --token; auth status / logout", async () =
     assert.equal(api.calls.at(-1).headers.authorization, "Bearer clv_acct_pasted");
     await noToken(dir, api, "auth", "logout");
     assert.equal(config().tokens[api.url], undefined);
-    await assert.rejects(noToken(dir, api, "auth", "nope"), (e) => /unknown auth command: nope/.test(e.stderr));
+    await assert.rejects(noToken(dir, api, "auth", "nope"), (e: ExecError) => /unknown auth command: nope/.test(e.stderr));
     assert.match((await noToken(dir, api, "auth", "--help")).stdout, /usage: cresslet auth login/);
     await noToken(dir, api, "auth", "login", "--token=clv_acct_kept");
     const n = api.calls.length;
@@ -1040,10 +1055,10 @@ test("auth login: browser approval or --token; auth status / logout", async () =
     await noToken(dir, api, "auth", "login", "--help");
     assert.equal(api.calls.length, n); // help only: no login started
     assert.equal(config().tokens[api.url], "clv_acct_kept"); // nor logged out
-    await assert.rejects(noToken(dir, api, "auth", "--token=x"), (e) => /usage: cresslet auth/.test(e.stderr));
+    await assert.rejects(noToken(dir, api, "auth", "--token=x"), (e: ExecError) => /usage: cresslet auth/.test(e.stderr));
     await noToken(dir, api, "auth", "login", "--token=clv_acct_pasted");
     const before = api.calls.length;
-    await assert.rejects(noToken(dir, api, "auth", "login", "--token="), (e) => /usage: cresslet auth login --token/.test(e.stderr));
+    await assert.rejects(noToken(dir, api, "auth", "login", "--token="), (e: ExecError) => /usage: cresslet auth login --token/.test(e.stderr));
     assert.equal(api.calls.length, before); // nothing sent, saved token kept
     assert.equal(config().tokens[api.url], "clv_acct_pasted");
   } finally {
@@ -1054,7 +1069,7 @@ test("auth login: browser approval or --token; auth status / logout", async () =
 test("config: default server is cresslet.dev; set/get/unset api; --api and CRESSLET_API win", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-cfg-"));
   const { CRESSLET_TOKEN: _t, CRESSLET_API: _a, ...env } = process.env;
-  const cli = (args, extra = {}) => run(process.execPath, [CLI, ...args], {
+  const cli = (args: string[], extra: Record<string, string> = {}) => run(process.execPath, [CLI, ...args], {
     cwd: dir,
     env: { ...env, CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1", ...extra },
   });
@@ -1077,10 +1092,10 @@ test("config: default server is cresslet.dev; set/get/unset api; --api and CRESS
     assert.match((await cli(["config", "get", "api", "--json"], { CRESSLET_API: "http://env.test" })).stdout, /"from": "CRESSLET_API"/);
     assert.match((await cli(["config", "set", "api", "http://x.test"], { CRESSLET_API: "http://env.test" })).stdout, /CRESSLET_API overrides it here/);
 
-    await assert.rejects(cli(["config", "set", "api", "nope"]), (e) => /not a URL: nope/.test(e.stderr));
-    await assert.rejects(cli(["config", "set", "api", "ftp://x"]), (e) => /not an http\(s\) URL/.test(e.stderr));
-    await assert.rejects(cli(["config", "set", "colour", "red"]), (e) => /unknown config key: colour/.test(e.stderr));
-    await assert.rejects(cli(["config", "frob"]), (e) => /unknown config command: frob/.test(e.stderr));
+    await assert.rejects(cli(["config", "set", "api", "nope"]), (e: ExecError) => /not a URL: nope/.test(e.stderr));
+    await assert.rejects(cli(["config", "set", "api", "ftp://x"]), (e: ExecError) => /not an http\(s\) URL/.test(e.stderr));
+    await assert.rejects(cli(["config", "set", "colour", "red"]), (e: ExecError) => /unknown config key: colour/.test(e.stderr));
+    await assert.rejects(cli(["config", "frob"]), (e: ExecError) => /unknown config command: frob/.test(e.stderr));
 
     assert.match((await cli(["config", "unset", "api"])).stdout, /api reset to https:\/\/cresslet\.dev/);
     assert.equal((await cli(["config", "get", "api"])).stdout.trim(), "https://cresslet.dev");
@@ -1092,7 +1107,7 @@ test("config: default server is cresslet.dev; set/get/unset api; --api and CRESS
 test("new against a non-default server records it in the project, so deploy goes there", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-new-"));
   const { CRESSLET_TOKEN: _t, CRESSLET_API: _a, ...env } = process.env;
-  const cli = (cwd, args) => run(process.execPath, [CLI, ...args], {
+  const cli = (cwd: string, args: string[]) => run(process.execPath, [CLI, ...args], {
     cwd,
     env: { ...env, CRESSLET_CONFIG_DIR: path.join(dir, ".cfg-test"), NO_COLOR: "1" },
   });
@@ -1110,7 +1125,7 @@ test("new against a non-default server records it in the project, so deploy goes
 });
 
 /** Routes for inspect / logs / db / secrets / rollback / delete / open of `name`, under its encoded path. */
-function appRoutes(name) {
+function appRoutes(name: string): Record<string, Route> {
   const p = `/v1/apps/${encodeURIComponent(name)}`;
   const app = { name, url: "ftp://not-opened", claimed: true, config: {}, currentDeployId: "dep_1" };
   return {
@@ -1208,7 +1223,7 @@ const ENV_SERVER = `export default {
 };
 `;
 
-const until = async (check, what) => {
+const until = async (check: () => unknown, what: string) => {
   for (let i = 0; i < 60; i++) {
     if (await check()) return;
     await new Promise((r) => setTimeout(r, 50));
@@ -1220,7 +1235,7 @@ test("dev: --port 0 gives env.app.url the bound port", async () => {
   const d = await devWith(ENV_SERVER);
   try {
     assert.doesNotMatch(d.url, /:0$/);
-    assert.equal((await (await fetch(d.url + "/api/x")).json()).appUrl, d.url);
+    assert.equal(((await (await fetch(d.url + "/api/x")).json()) as { appUrl: string }).appUrl, d.url);
   } finally {
     await d.close();
   }
@@ -1232,7 +1247,7 @@ test("dev: editing .env.cresslet updates env.secrets live, still frozen", async 
   fs.writeFileSync(path.join(dir, ".env.cresslet"), "TOKEN=one\n");
   const d = await dev(loadProject(dir), { port: 0, log: () => {} });
   try {
-    const get = async () => (await fetch(d.url + "/api/x")).json();
+    const get = async () => (await (await fetch(d.url + "/api/x")).json()) as { secrets: Record<string, string>; frozen: boolean };
     assert.deepEqual(await get(), { path: "/api/x", secrets: { TOKEN: "one" }, frozen: true, appUrl: d.url });
     fs.writeFileSync(path.join(dir, ".env.cresslet"), "TOKEN=two\nOTHER=3\n");
     await until(async () => (await get()).secrets.TOKEN === "two", "TOKEN=two");
@@ -1247,11 +1262,11 @@ test("dev: editing .env.cresslet updates env.secrets live, still frozen", async 
 test("dev: editing cresslet.json updates routes and crons live; invalid JSON keeps the previous ones", async () => {
   const dir = copyFixture();
   fs.writeFileSync(path.join(dir, "server", "index.ts"), ENV_SERVER);
-  const cfg = (c) => fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify(c));
+  const cfg = (c: object) => fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify(c));
   cfg({ name: "", routes: ["/api/*"], crons: ["0 * * * *"] });
-  const logs = [];
+  const logs: string[] = [];
   const d = await dev(loadProject(dir), { port: 0, log: (m) => logs.push(m) });
-  const isApi = async (p) => (await fetch(d.url + p)).headers.get("content-type")?.includes("application/json");
+  const isApi = async (p: string) => (await fetch(d.url + p)).headers.get("content-type")?.includes("application/json");
   const cron = async () => {
     const r = await fetch(d.url + "/__cresslet/scheduled", { method: "POST", headers: { "x-cresslet-dev": "1" } });
     assert.equal(r.status, 204);
@@ -1262,19 +1277,19 @@ test("dev: editing cresslet.json updates routes and crons live; invalid JSON kee
     await until(() => isApi("/hooks/a"), "/hooks/* routed");
     // the scheduled() export runs in this process (dev imports the bundle), so its global is visible here
     await cron();
-    assert.equal(globalThis.lastCron, "*/5 * * * *");
+    assert.equal(globals.lastCron, "*/5 * * * *");
 
     fs.writeFileSync(path.join(dir, "cresslet.json"), '{"routes": ["/api/*"'); // a save caught half-written
     await until(() => logs.some((l) => /cresslet\.json/.test(l)), "invalid JSON logged");
     assert.equal(await isApi("/hooks/a"), true, "previous routes kept");
     await cron();
-    assert.equal(globalThis.lastCron, "*/5 * * * *", "previous crons kept");
+    assert.equal(globals.lastCron, "*/5 * * * *", "previous crons kept");
 
     cfg({ name: "", routes: ["/api/*"] });
     await until(async () => !(await isApi("/hooks/a")), "/hooks/* unrouted");
     assert.equal((await fetch(d.url + "/__cresslet/scheduled", { method: "POST", headers: { "x-cresslet-dev": "1" } })).status, 400);
   } finally {
     await d.close();
-    delete globalThis.lastCron;
+    delete globals.lastCron;
   }
 });
