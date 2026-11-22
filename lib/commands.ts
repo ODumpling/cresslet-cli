@@ -365,16 +365,21 @@ function commitSources(project: Project): WireFile[] {
   const out = fw ? path.relative(root, path.resolve(root, fw.static)).split(path.sep).join("/") : null;
   const inGit = gitOut(root, "rev-parse", "--is-inside-work-tree") === "true";
   // In a checkout git's own ignore rules decide (all of them, negations too), not the deploy filter's simple reading.
-  let paths = listSources(root, { exclude: [configDir(), path.join(root, "dist"), ...(fw ? [path.resolve(root, fw.static)] : [])], gitignore: !inGit });
+  // Folders git ignores aren't walked at all (big, or unreadable: a database's bind mount, say). Exact: git can't
+  // re-include a file inside an ignored folder.
+  const ignoredDirs = inGit
+    ? (gitRaw(root, "ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory", "--", ".") ?? "").split("\0").filter((p) => p.endsWith("/")).map((p) => path.join(root, p))
+    : [];
+  let paths = listSources(root, { exclude: [configDir(), path.join(root, "dist"), ...(fw ? [path.resolve(root, fw.static)] : []), ...ignoredDirs], gitignore: !inGit });
   if (inGit) {
     const listed = gitRaw(root, "ls-files", "-z", "-co", "--exclude-standard", "--", ".");
     if (listed === null) throw new CliError("couldn't list this checkout's files with git");
     const ok = new Set(listed.split("\0").filter(Boolean));
     paths = paths.filter((p) => ok.has(p));
     // Committed build output would be deleted from the branch (the commit holds exactly what's sent).
-    if (out && !out.startsWith("..")) {
+    if (out && !out.startsWith("..") && out !== "dist" && !out.startsWith("dist/")) { // the server never deletes dist/
       const tracked = (gitRaw(root, "ls-files", "-z", "-c", "--", out) ?? "").split("\0").filter(Boolean);
-      if (tracked.length) throw new CliError(`${out}/ (build output) is committed: a commit from here would delete it`, `git rm -r --cached ${out} and add it to .gitignore first`);
+      if (tracked.length) throw new CliError(`${out}/ (build output) is committed: a commit from here would delete it`, `git rm -r --cached ${JSON.stringify(out)} and add it to .gitignore first`);
     }
   }
   if (!paths.length) throw new CliError("no source files to commit here");

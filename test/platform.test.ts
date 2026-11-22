@@ -1397,6 +1397,22 @@ test("git sync / connect --push: only what git would commit, never an empty or p
     const over = await cliEnv({ CRESSLET_MAX_DEPLOY_FILES: "1" })(dir, api, "git", "sync").catch((e: ExecError) => e);
     assert.match((over as ExecError).stderr, /more than the 1/);
     assert.equal(api.calls.filter((c) => c.path.endsWith("/git/sync")).length, 0);
+    // An ignored folder that can't be read isn't walked.
+    fs.appendFileSync(path.join(dir, ".gitignore"), "\npgdata/\n");
+    fs.mkdirSync(path.join(dir, "pgdata"));
+    fs.chmodSync(path.join(dir, "pgdata"), 0o000);
+    try {
+      assert.equal((await cli(dir, api, "git", "connect", "octo/shop", "--push")).stderr.includes("EACCES"), false);
+    } finally {
+      fs.chmodSync(path.join(dir, "pgdata"), 0o755);
+    }
+    // Committed build output would be deleted: refused.
+    fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a", build: { command: "true", static: "out" } }));
+    fs.mkdirSync(path.join(dir, "out"));
+    fs.writeFileSync(path.join(dir, "out", "index.html"), "built");
+    await gitIn(dir, "add", "-A");
+    const built = await cli(dir, api, "git", "connect", "octo/shop", "--push").catch((e: ExecError) => e);
+    assert.match((built as ExecError).stderr, /out\/ \(build output\) is committed/);
   } finally {
     await api.close();
   }
