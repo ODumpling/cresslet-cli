@@ -69,6 +69,4 @@ needs more than type stripping. The cresslet repo picks up a change when it vend
 
 - `noUncheckedIndexedAccess`: not on yet (it would add a check or `!` to most array/record reads).
 - Validate the server's replies (or share their types with the cresslet repo) instead of describing them per call.
-- Flags given without a value are `true`; a few commands pass a flag on as text without checking (`--dir`, `--host`,
-  `--app` …: `flags.x as string` in lib/commands.ts).
 - The internal modules' `.d.ts` files are published too (only `cresslet` and `cresslet/vite` are exported).
