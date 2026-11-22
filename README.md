@@ -98,7 +98,10 @@ App format: [docs/app-format.md](https://github.com/ODumpling/cresslet/blob/main
 ## Develop
 
 ```sh
-npm install && npm test
+npm install && npm run typecheck && npm test
 ```
+
+TypeScript, compiled to `dist/` (what's published): see [docs/typescript.md](docs/typescript.md). Needs Node ≥ 22.18
+to develop (the build scripts are `.ts`); the package itself runs on Node ≥ 22.13.
 
 MIT

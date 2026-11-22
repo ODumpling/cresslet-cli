@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-import * as c from "../lib/commands.js";
+import * as c from "../lib/commands.ts";
 import { createRequire } from "node:module";
-import { CliError, color, parseArgs } from "../lib/util.js";
+import { type Args, CliError, color, parseArgs } from "../lib/util.ts";
 
-const { version: VERSION } = createRequire(import.meta.url)("../package.json");
+// The package's own package.json, by name (self-reference): the same from bin/ and from the built dist/bin/.
+const { version: VERSION } = createRequire(import.meta.url)("cresslet/package.json") as { version: string };
 
-const COMMANDS = {
+/** name → [run, usage, description] */
+const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> = {
   new: [c.cmdNew, "new <dir> [--template react|vanilla]", "create an app from a template"],
   init: [c.cmdInit, "init [--template react|vanilla]", "create an app in the current directory"],
   templates: [c.cmdTemplates, "templates", "list templates"],
@@ -58,7 +60,7 @@ if (cmd === "--version" || cmd === "-v") {
   process.exit(0);
 }
 // `auth login|logout|status`: same as login / logout / whoami.
-const AUTH = { login: "login", logout: "logout", status: "whoami" };
+const AUTH: Record<string, string> = { login: "login", logout: "logout", status: "whoami" };
 // `--help` / `-h` anywhere before `--` prints the command's usage instead of running it.
 const end = rest.indexOf("--");
 const wantsHelp = (end === -1 ? rest : rest.slice(0, end)).some((a) => a === "--help" || a === "-h");
@@ -97,6 +99,6 @@ try {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);
     if (e.hint) console.error(color.dim(`  ${e.hint}`));
-  } else console.error(e?.stack ?? e);
+  } else console.error((e as Error | undefined)?.stack ?? e);
   process.exit(1);
 }

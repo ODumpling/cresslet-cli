@@ -1,0 +1,22 @@
+{
+  // Type-checks everything we own (`npm run typecheck`); tsconfig.build.json emits dist/ from it.
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": "dist",
+    "noEmit": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "sdk/**/*.ts", "test/*.ts", "scripts/**/*.ts"]
+}

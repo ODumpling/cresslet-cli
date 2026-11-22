@@ -7,7 +7,40 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import * as esbuild from "esbuild";
 
-const compilers = createRequire(import.meta.url)("./compilers.cjs");
+/** A Tailwind v4 compile's sources: `@source` paths / globs and its `source(...)` root (null: the project's). */
+export interface TailwindSources {
+  sources: { base: string; pattern: string; negated: boolean }[];
+  root: null | "none" | { base: string; pattern: string };
+}
+/** What this file uses of ./compilers.cjs (vendored JavaScript: see its header). */
+interface Compilers {
+  TAILWIND_RE: RegExp;
+  handle(req: {
+    root: string;
+    file: string;
+    css: string;
+    candidates: string[];
+    postcssConfig: string | null;
+    env: string;
+    tailwind: boolean;
+    plugins: boolean;
+    session: string;
+    discover?: boolean;
+  }): Promise<{ css: string; deps: string[]; dirs: string[]; tailwind: TailwindSources[]; warnings: string[] }>;
+  compileSfc(req: {
+    op: "sfc";
+    root: string;
+    file: string;
+    source: string;
+    hmrId: string;
+    session: string;
+    env: string;
+    plugins: boolean;
+  }): Promise<{ code: string; lang: "js" | "ts"; deps: string[]; styles?: string[]; warnings: string[] }>;
+  release(session: string): void;
+  formatError(e: unknown): string;
+}
+const compilers = createRequire(import.meta.url)("./compilers.cjs") as Compilers;
 
 /** Every stylesheet extension treated as CSS; Sass/Less are compiled first. */
 export const STYLE_RE = /\.(css|s[ac]ss|less)$/;
@@ -18,20 +51,25 @@ export const SFC_RE = /\.(?:vue|svelte)$|\.svelte\.[cm]?[jt]s$/;
 const POSTCSS_CONFIGS = ["postcss.config.js", "postcss.config.mjs", "postcss.config.cjs", "postcss.config.ts",
   "postcss.config.mts", ".postcssrc.js", ".postcssrc.cjs", ".postcssrc.mjs", ".postcssrc.json"];
 
-function readPackage(root) {
+interface PackageJson {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+function readPackage(root: string): PackageJson {
   try {
     return JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   } catch {
     return {};
   }
 }
-const depsOf = (root) => {
+const depsOf = (root: string): Record<string, string> => {
   const j = readPackage(root);
   return { ...j.devDependencies, ...j.dependencies };
 };
 
 /** Which CSS processing a project gets (as the container's detectCssMode). */
-export function detectCssMode(root) {
+export function detectCssMode(root: string): { postcssConfig: string | null; tailwind: boolean } {
   const postcssConfig = POSTCSS_CONFIGS.map((f) => path.join(root, f)).find((p) => fs.existsSync(p)) ?? null;
   const d = depsOf(root);
   return { postcssConfig, tailwind: !!(d.tailwindcss || d["@tailwindcss/postcss"] || d["@tailwindcss/vite"] || d["@tailwindcss/cli"]) };
@@ -41,20 +79,20 @@ export function detectCssMode(root) {
  * esbuild resolve conditions, as the Studio's: the mode's (`development` / `production`), and in Svelte projects
  * packages' `svelte` export (component libraries ship sources there). (browser/import/default are esbuild's own.)
  */
-export function resolveConditions(root, mode) {
+export function resolveConditions(root: string, mode: string): string[] {
   return [...(depsOf(root).svelte ? ["svelte"] : []), "module", mode];
 }
 
 /** `%VITE_X%` / `%CRESSLET_PUBLIC_X%` / `%MODE%` in index.html, from the public env (unknown names left as written). */
-export function htmlEnv(html, env) {
-  return html.replace(/%(\w+)%/g, (m, k) => (Object.hasOwn(env, k) ? String(env[k]) : m));
+export function htmlEnv(html: string, env: Record<string, unknown>): string {
+  return html.replace(/%(\w+)%/g, (m, k: string) => (Object.hasOwn(env, k) ? String(env[k]) : m));
 }
 
 // The compilers keep module-level state (caches, require.cache, NODE_ENV) and expect one request at a time, as the
 // container's worker process runs them: esbuild's concurrent onLoad callbacks are queued.
 // They also set process.env.NODE_ENV for plugins: the caller's value is put back after each request.
-let queue = Promise.resolve();
-const serial = (f) => {
+let queue: Promise<unknown> = Promise.resolve();
+const serial = <T>(f: () => Promise<T>): Promise<T> => {
   const p = queue.then(async () => {
     const had = Object.hasOwn(process.env, "NODE_ENV");
     const before = process.env.NODE_ENV;
@@ -70,22 +108,26 @@ const serial = (f) => {
 };
 let sessions = 0;
 
-const splitQuery = (p) => {
+const splitQuery = (p: string): [string, string] => {
   const from = p.startsWith("#") ? 1 : 0;
   const j = p.slice(from).search(/[?#]/);
   return j < 0 ? [p, ""] : [p.slice(0, j + from), p.slice(j + from)];
 };
-const isFile = (p) => {
+const isFile = (p: string) => {
   try {
     return fs.statSync(p).isFile();
   } catch {
     return false;
   }
 };
-const errorResult = (e, watchFiles = []) => ({ errors: [{ text: compilers.formatError(e) }], watchFiles: [...watchFiles, ...(e?.deps ?? [])], watchDirs: e?.dirs ?? [] });
+/** A compile error as esbuild's result; the compilers add what to watch for a retry (`deps`, `dirs`). */
+const errorResult = (e: unknown, watchFiles: string[] = []): esbuild.OnLoadResult => {
+  const { deps, dirs } = (e ?? {}) as { deps?: string[]; dirs?: string[] };
+  return { errors: [{ text: compilers.formatError(e) }], watchFiles: [...watchFiles, ...(deps ?? [])], watchDirs: dirs ?? [] };
+};
 
 /** A short stable id for a component (Vue's scope id), from its root-relative path (as the container's sfcId). */
-export function sfcId(url) {
+export function sfcId(url: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < url.length; i++) h = Math.imul(h ^ url.charCodeAt(i), 0x01000193);
   return (h >>> 0).toString(16).padStart(8, "0");
@@ -95,19 +137,19 @@ export function sfcId(url) {
  * esbuild plugins for a client build: `dev` compiles in development mode (Svelte/Vue dev builds, NODE_ENV for PostCSS
  * plugins), else production. `release()` frees the compilers' state for this build.
  */
-export function frontendPlugins(root, { dev = false } = {}) {
+export function frontendPlugins(root: string, { dev = false }: { dev?: boolean } = {}): { plugins: esbuild.Plugin[]; release(): void } {
   const env = dev ? "development" : "production";
   const session = `cli-${env}-${++sessions}`;
-  const scanCache = new Map(); // file -> { sig, candidates }
-  const styles = new Map(); // component file -> its style blocks' CSS
+  const scanCache: ScanCache = new Map(); // file -> { sig, candidates }
+  const styles = new Map<string, string[]>(); // component file -> its style blocks' CSS
 
   /** Stylesheet text -> CSS (Sass/Less, then PostCSS/Tailwind), plus what to watch. null: plain CSS, nothing to do. */
-  async function processCss(file, css) {
+  async function processCss(file: string, css: string) {
     const mode = detectCssMode(root); // (re-read each time: package.json / config may change during dev)
     if (!PREPROCESSED_RE.test(file) && !mode.postcssConfig && !(mode.tailwind && compilers.TAILWIND_RE.test(css))) return null;
     const req = { root, file, css, candidates: [], postcssConfig: mode.postcssConfig, env, tailwind: mode.tailwind, plugins: true, session };
     const watchFiles = mode.postcssConfig ? [mode.postcssConfig] : [];
-    const watchDirs = [];
+    const watchDirs: string[] = [];
     // Tailwind: first learn the stylesheet's sources (`@source`, `source(...)`), then build with their candidates
     let r = await serial(() => compilers.handle({ ...req, discover: mode.tailwind }));
     if (mode.tailwind && r.tailwind.length) {
@@ -120,9 +162,9 @@ export function frontendPlugins(root, { dev = false } = {}) {
   }
 
   // a failed compile is retried in dev when the PostCSS config is fixed (the compiler's deps don't list it)
-  const configWatch = () => [detectCssMode(root).postcssConfig].filter(Boolean);
+  const configWatch = () => [detectCssMode(root).postcssConfig].filter((f): f is string => Boolean(f));
 
-  const css = {
+  const css: esbuild.Plugin = {
     name: "cresslet-css",
     setup(b) {
       b.onLoad({ filter: STYLE_RE, namespace: "file" }, async (a) => {
@@ -146,7 +188,7 @@ export function frontendPlugins(root, { dev = false } = {}) {
   };
 
   const STYLE_NS = "cresslet-sfc-style";
-  const sfc = {
+  const sfc: esbuild.Plugin = {
     name: "cresslet-sfc",
     setup(b) {
       b.onLoad({ filter: SFC_RE, namespace: "file" }, async (a) => {
@@ -172,7 +214,7 @@ export function frontendPlugins(root, { dev = false } = {}) {
       });
       b.onResolve({ filter: /^cresslet-sfc-style:/ }, (a) => ({ path: a.path.slice(STYLE_NS.length + 1), namespace: STYLE_NS }));
       b.onLoad({ filter: /.*/, namespace: STYLE_NS }, async (a) => {
-        const [, i, file] = /^(\d+):(.*)$/s.exec(a.path);
+        const [, i, file] = /^(\d+):(.*)$/s.exec(a.path)!; // the paths onResolve made
         const text = styles.get(file)?.[+i] ?? "";
         try {
           // named as a stylesheet beside the component (the container's styleFile), for PostCSS / Tailwind
@@ -192,7 +234,7 @@ export function frontendPlugins(root, { dev = false } = {}) {
     },
   };
 
-  const queries = {
+  const queries: esbuild.Plugin = {
     name: "cresslet-import-queries",
     setup(b) {
       // `import text from "./a.md?raw"`, `import href from "./logo.svg?url"` (as vite)
@@ -200,7 +242,7 @@ export function frontendPlugins(root, { dev = false } = {}) {
         if (a.kind !== "import-statement" && a.kind !== "dynamic-import") return undefined;
         const [clean, query] = splitQuery(a.path);
         // `/src/a.md?raw`: from the project root, as the Studio resolves it
-        const r = clean.startsWith("/") && isFile(path.join(root, clean))
+        const r: Pick<esbuild.ResolveResult, "path" | "errors"> & { external?: boolean } = clean.startsWith("/") && isFile(path.join(root, clean))
           ? { path: path.join(root, clean), errors: [] }
           : await b.resolve(clean, { kind: a.kind, resolveDir: a.resolveDir, importer: a.importer });
         if (r.errors.length) return { errors: r.errors };
@@ -212,7 +254,7 @@ export function frontendPlugins(root, { dev = false } = {}) {
     },
   };
 
-  const rootUrls = {
+  const rootUrls: esbuild.Plugin = {
     name: "cresslet-root-urls",
     setup(b) {
       // `url(/src/logo.svg)` in a stylesheet: a project file, from the root (dev SFC styles are written so, and the dev
@@ -232,14 +274,17 @@ export function frontendPlugins(root, { dev = false } = {}) {
 
 // ---- Tailwind content scanning (the container's scan.ts, over the real filesystem) ----
 
+/** file -> its signature (mtime:size) when read, and the candidates in it */
+type ScanCache = Map<string, { sig: string; candidates: Set<string> }>;
+
 const SKIP_EXT = /\.(css|scss|sass|less|styl|lock|log|map|png|jpe?g|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp4|webm|mov|mp3|wav|ogg|flac|pdf|zip|gz|tgz|br|wasm|exe|dll|so|dylib|node|db|sqlite)$/i;
 const SKIP_NAMES = new Set(["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "npm-shrinkwrap.json"]);
 const SKIP_ROOT_DIRS = new Set(["dist", "build", "coverage", "out"]);
 const MAX_FILE = 2_000_000;
 
 /** Class-candidate tokens in a source file (over-extraction is harmless: Tailwind ignores non-utilities). */
-export function extractCandidates(text, into = new Set()) {
-  const add = (tok) => {
+export function extractCandidates(text: string, into: Set<string> = new Set()): Set<string> {
+  const add = (tok: string) => {
     let t = tok.replace(/^[,:(]+/, "").replace(/[,.:]+$/, "");
     if (!t.includes("(")) t = t.replace(/\)+$/, "").replace(/[,.:]+$/, "");
     if (t && /[a-z]/i.test(t)) into.add(t);
@@ -253,7 +298,7 @@ export function extractCandidates(text, into = new Set()) {
 }
 
 /** Minimal glob -> RegExp (`**`, `*`, `?`, `{a,b}`), matched against an absolute path. */
-export function globToRegExp(glob) {
+export function globToRegExp(glob: string): RegExp {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i];
@@ -278,9 +323,9 @@ export function globToRegExp(glob) {
   return new RegExp("^" + re + "$");
 }
 
-const posix = (p) => p.split(path.sep).join("/");
-const trimDir = (p) => p.replace(/(?<=.)\/+$/, "");
-function compileSource(base, pattern) {
+const posix = (p: string) => p.split(path.sep).join("/");
+const trimDir = (p: string) => p.replace(/(?<=.)\/+$/, "");
+function compileSource(base: string, pattern: string): { dir: string; match: RegExp | null } {
   const abs = trimDir(posix(path.resolve(base, pattern)));
   const segs = abs.split("/");
   const k = segs.findIndex((s) => /[*?{]/.test(s));
@@ -293,9 +338,9 @@ function compileSource(base, pattern) {
  * and its `@source` paths / globs, minus `@source not`. Auto-detected scopes skip node_modules, dot-directories and
  * dist/build/out/coverage at their root; explicit `@source` paths are scanned as given. Also returns what was read.
  */
-export function scanSources(rules, root, cache = new Map()) {
-  const scopes = [];
-  const excludes = [];
+export function scanSources(rules: TailwindSources[], root: string, cache: ScanCache = new Map()): { candidates: string[]; files: string[]; dirs: string[] } {
+  const scopes: { dir: string; match: RegExp | null; auto: boolean }[] = [];
+  const excludes: RegExp[] = [];
   for (const r of rules) {
     if (r.root === null) scopes.push({ dir: trimDir(posix(root)), match: null, auto: true });
     else if (r.root !== "none") scopes.push({ dir: trimDir(posix(path.resolve(r.root.base, r.root.pattern))), match: null, auto: true });
@@ -305,10 +350,10 @@ export function scanSources(rules, root, cache = new Map()) {
       else excludes.push(c.match ?? new RegExp("^" + c.dir.replace(/[.+^$()|[\]\\*?{}]/g, "\\$&") + "(?:/|$)"));
     }
   }
-  const candidates = new Set();
-  const files = new Set();
-  const dirs = new Set();
-  const visit = (s, p) => {
+  const candidates = new Set<string>();
+  const files = new Set<string>();
+  const dirs = new Set<string>();
+  const visit = (s: (typeof scopes)[number], p: string) => {
     const name = p.slice(p.lastIndexOf("/") + 1);
     if (files.has(p) || SKIP_EXT.test(name) || SKIP_NAMES.has(name) || (s.match && !s.match.test(p)) || excludes.some((r) => r.test(p))) return;
     let st;
@@ -344,7 +389,7 @@ export function scanSources(rules, root, cache = new Map()) {
     const seen = new Set(); // per scope: two `@source` globs under one directory both walk it
     const stack = [{ dir: s.dir, top: true }];
     while (stack.length) {
-      const d = stack.pop();
+      const d = stack.pop()!; // (stack.length > 0)
       let real;
       try {
         real = fs.realpathSync(d.dir);

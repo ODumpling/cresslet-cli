@@ -4,10 +4,21 @@
 // secrets from .env.cresslet (re-read on save). Production builds don't use it: the platform provides the bindings.
 import fs from "node:fs";
 import path from "node:path";
-import { createEnv, RUNTIME_CONTRACT, RUNTIME_KEY } from "./bindings.js";
-import { readDotenv } from "./util.js";
+import { createEnv, type DevEnv, type PublishedRuntime, RUNTIME_CONTRACT, RUNTIME_KEY, runtimeGlobal } from "./bindings.ts";
+import { readDotenv } from "./util.ts";
 
-function appName(root) {
+/** What the plugin uses of Vite's dev server (ViteDevServer; this package doesn't depend on Vite). */
+interface ViteDevServerLike {
+  config: { root: string; server: { port?: number } };
+  resolvedUrls?: { local?: string[] } | null;
+  watcher: {
+    add(file: string): void;
+    on(event: "change" | "add" | "unlink", listener: (file: string) => void): ViteDevServerLike["watcher"];
+  };
+  httpServer?: { once(event: "close", listener: () => void): unknown } | null;
+}
+
+function appName(root: string): string {
   try {
     const name = JSON.parse(fs.readFileSync(path.join(root, "cresslet.json"), "utf8")).name;
     if (typeof name === "string" && name) return name;
@@ -15,21 +26,24 @@ function appName(root) {
   return path.basename(root);
 }
 
-/** @param {{ dataDir?: string }} [options] `dataDir`: where the local db and files live (default .cresslet/dev/data). */
-export function cresslet(options = {}) {
-  let env = null;
-  let previous;
-  let runtime = null;
+/** Vite plugin: the app's Cresslet bindings (db, kv, files, secrets, app) for server code under `vite dev`. */
+export function cresslet(options: {
+  /** Where the local db and files live. Default: .cresslet/dev/data (shared with `cresslet dev`). */
+  dataDir?: string;
+} = {}): { name: string; apply: "serve"; [hook: string]: unknown } {
+  let env: DevEnv | null = null;
+  let previous: unknown;
+  let runtime: PublishedRuntime | null = null;
   const close = () => {
     if (!env) return;
-    if (globalThis[RUNTIME_KEY] === runtime) globalThis[RUNTIME_KEY] = previous;
+    if (runtimeGlobal[RUNTIME_KEY] === runtime) runtimeGlobal[RUNTIME_KEY] = previous;
     env.close();
     env = runtime = null;
   };
   return {
     name: "cresslet",
     apply: "serve",
-    async configureServer(server) {
+    async configureServer(server: ViteDevServerLike) {
       const root = server.config.root;
       const secretsFile = path.join(root, ".env.cresslet");
       const port = server.config.server.port ?? 5173;
@@ -46,11 +60,11 @@ export function cresslet(options = {}) {
           deployId: "dev",
         },
       });
-      previous = globalThis[RUNTIME_KEY];
+      previous = runtimeGlobal[RUNTIME_KEY];
       runtime = { contract: RUNTIME_CONTRACT, runtime: "cresslet vite", paramStyle: "?", env };
-      globalThis[RUNTIME_KEY] = runtime;
+      runtimeGlobal[RUNTIME_KEY] = runtime;
       server.watcher.add(secretsFile);
-      const reload = (file) => {
+      const reload = (file: string) => {
         if (env && path.resolve(file) === secretsFile) env.secrets = Object.freeze({ ...readDotenv(secretsFile) });
       };
       server.watcher.on("change", reload).on("add", reload).on("unlink", reload);

@@ -27,7 +27,8 @@ jobs:
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json v$v"; exit 1; }
 
       - run: npm ci
-      - run: npm test
+      - run: npm run typecheck
+      - run: npm test # builds dist/ and tests it; npm publish builds it again (prepare)
 
       # Trusted publishing: configure on npmjs.com (package settings) for
       # ODumpling/cresslet-cli, workflow release.yml. No token needed.

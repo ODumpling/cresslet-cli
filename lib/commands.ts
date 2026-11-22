@@ -2,24 +2,93 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { spawn } from "node:child_process";
-import { apiBase, apiSource, client } from "./api.js";
-import { build, frameworkBuild, listFiles, listSources, notStatic, readSource, runCommand } from "./build.js";
-import { dev } from "./dev.js";
-import { CliError, color, configDir, DEFAULT_API, ensureGitignore, findRoot, formatBytes, loadProject, readGlobal, readLink, writeGlobal } from "./util.js";
+import { apiBase, apiSource, type Client, client } from "./api.ts";
+import { build, type FrameworkBuild, frameworkBuild, listFiles, listSources, notStatic, readSource, runCommand } from "./build.ts";
+import { dev } from "./dev.ts";
+import {
+  type Args,
+  CliError,
+  color,
+  configDir,
+  DEFAULT_API,
+  ensureGitignore,
+  findRoot,
+  type Flags,
+  formatBytes,
+  type GlobalConfig,
+  type Link,
+  loadProject,
+  type Project,
+  readGlobal,
+  readLink,
+  textFlag,
+  writeGlobal,
+} from "./util.ts";
 
-const out = (flags, human, json) => {
+// Flags given without a value are `true` (util.ts parseArgs): read ones that take a value with textFlag().
+
+// ---- the server's replies, as the commands read them (the API is the server's: cresslet repo)
+/** A file in a template, a deploy's source or an upload. */
+interface WireFile {
+  path: string;
+  data: string;
+  encoding?: string;
+}
+interface Account {
+  email: string;
+  github?: string;
+}
+type Visibility = "private" | "link" | "public";
+/** An artifact (the API's "page"). */
+interface Page {
+  id: string;
+  name: string;
+  title: string | null;
+  url: string;
+  visibility: Visibility;
+  retentionDays: number | null;
+  expiresAt: string;
+  files: number;
+  bytes: number;
+  access?: string;
+}
+interface Domain {
+  domain: string;
+  verified: boolean;
+  dns: { type: string; name: string; value: string }[];
+}
+/** A device-code login's start (`/v1/auth/cli`, `/v1/auth/github/device`) and its polls. */
+interface DeviceCode {
+  verificationUri: string;
+  userCode: string;
+  deviceCode: string;
+  expiresIn?: number;
+  interval?: number;
+}
+type LoginPoll = { status: "complete"; token: string; account: Account } | { status: string; interval?: number };
+interface Login {
+  token: string;
+  account: Account;
+}
+/** Artifact settings (the account's defaults for new ones: `pages`). */
+interface PageSettings {
+  visibility: Visibility;
+  retentionDays: number | null;
+}
+
+const out = (flags: Flags, human: string | (() => void), json?: unknown) => {
   if (flags.json) console.log(JSON.stringify(json ?? human, null, 2));
   else if (typeof human === "function") human();
   else console.log(human);
 };
 
-const appName = (project, flags) => {
-  const name = flags.app ?? project.link.name ?? (project.config.name || undefined);
+const appName = (project: Pick<Project, "link" | "config">, flags: Flags): string => {
+  const name = textFlag(flags, "app") ?? project.link.name ?? (project.config.name || undefined);
   if (!name) throw new CliError("this app has not been deployed yet", "run `cresslet deploy` first or pass --app <name>");
   return name;
 };
 
-async function ask(q) {
+async function ask(q: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
   try {
     return (await rl.question(q)).trim();
@@ -29,22 +98,22 @@ async function ask(q) {
 }
 
 // ---------------------------------------------------------------- new / init
-export async function cmdNew({ _: [dir], flags }) {
+export async function cmdNew({ _: [dir], flags }: Args): Promise<void> {
   if (!dir) throw new CliError("usage: cresslet new <dir> [--template react|vanilla|tanstack-start]");
   return scaffold(path.resolve(dir), flags, true);
 }
 
-export async function cmdInit({ flags }) {
+export async function cmdInit({ flags }: Args): Promise<void> {
   return scaffold(process.cwd(), flags, false);
 }
 
-async function scaffold(dest, flags, isNew) {
-  const template = flags.template ?? flags.t ?? "react";
+async function scaffold(dest: string, flags: Flags, isNew: boolean) {
+  const template = textFlag(flags, "template") ?? textFlag(flags, "t") ?? "react";
   if (fs.existsSync(dest) && fs.readdirSync(dest).filter((f) => f !== ".git").length && !flags.force) {
     throw new CliError(`${dest} is not empty`, "use an empty directory or pass --force");
   }
   const api = client({ flags });
-  const t = await api.get(`/v1/templates/${encodeURIComponent(template)}`, { auth: false });
+  const t = await api.get<{ files: WireFile[] }>(`/v1/templates/${encodeURIComponent(template)}`, { auth: false });
   for (const f of t.files) {
     const target = path.join(dest, f.path);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -70,20 +139,20 @@ async function scaffold(dest, flags, isNew) {
   }, { dir: dest, template, files: t.files.map((f) => f.path) });
 }
 
-export async function cmdTemplates({ flags }) {
-  const r = await client({ flags }).get("/v1/templates", { auth: false });
+export async function cmdTemplates({ flags }: Args): Promise<void> {
+  const r = await client({ flags }).get<{ templates: { name: string; description?: string }[] }>("/v1/templates", { auth: false });
   out(flags, () => {
     for (const t of r.templates) console.log(`${color.bold(t.name.padEnd(16))} ${t.description ?? ""}`);
   }, r);
 }
 
 // ---------------------------------------------------------------- dev / build
-export async function cmdDev({ flags }) {
+export async function cmdDev({ flags }: Args): Promise<void> {
   const project = loadProject();
   const fw = frameworkBuild(project.config);
   if (fw) return frameworkDev(project, fw, flags);
   const port = Number(flags.port ?? flags.p ?? process.env.PORT ?? 3000);
-  const d = await dev(project, { port, host: flags.host ?? "localhost" });
+  const d = await dev(project, { port, host: textFlag(flags, "host") ?? "localhost" });
   console.log(`${color.green("✔")} dev server ${color.bold(d.url)}  ${color.dim("(ctrl+c to stop)")}`);
   for (const cron of project.config.crons ?? []) {
     console.log(color.dim(`  cron "${cron}": curl -X POST -H 'x-cresslet-dev: 1' '${d.url}/__cresslet/scheduled?cron=${encodeURIComponent(cron)}'`));
@@ -97,20 +166,20 @@ export async function cmdDev({ flags }) {
 }
 
 /** A framework project (cresslet.json `build`): its own dev server (Vite + `cresslet/vite` gives it db, files, …). */
-async function frameworkDev(project, fw, flags) {
+async function frameworkDev(project: Project, fw: FrameworkBuild, flags: Flags) {
   if (!fw.dev) {
     throw new CliError('cresslet.json "build" has no "dev" command', 'add e.g. "dev": "vite dev", or run your framework\'s dev server');
   }
   const port = flags.port ?? flags.p;
   const command = port ? `${fw.dev} --port ${Number(port)}` : fw.dev;
   const { child, done } = runCommand(command, project.root, { stdio: "inherit", env: port ? { PORT: String(Number(port)) } : {} });
-  const forward = (sig) => () => child.kill(sig);
+  const forward = (sig: NodeJS.Signals) => () => child.kill(sig);
   process.on("SIGINT", forward("SIGINT"));
   process.on("SIGTERM", forward("SIGTERM"));
   process.exitCode = await done;
 }
 
-export async function cmdBuild({ flags }) {
+export async function cmdBuild({ flags }: Args): Promise<void> {
   const project = loadProject();
   const t = performance.now();
   const r = await build(project.root, { config: project.config });
@@ -126,9 +195,10 @@ export async function cmdBuild({ flags }) {
  * Artifact: a single .html file, `--artifact` (or an artifact setting), or a folder deployed as one before.
  * App: a project (cresslet.json), a linked app, or any other static folder (public, as before).
  */
-export async function cmdDeploy({ _: [target], flags }) {
+export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   const art = artifactTarget(target, flags);
   if (art) return deployArtifact(art, flags);
+  const nameFlag = textFlag(flags, "name"); // a bare --name fails before any build
   // e.g. `deploy dist` in a project: its build output isn't an app of its own (a linked one, e.g. pulled there, is).
   const abs = path.resolve(target ?? ".");
   if (target && !fs.existsSync(path.join(abs, "cresslet.json")) && !readLink(abs).name) {
@@ -145,16 +215,18 @@ export async function cmdDeploy({ _: [target], flags }) {
   const staticFirst = !fs.existsSync(path.join(project.root, "cresslet.json")) && !project.link.name;
   const t0 = performance.now();
 
-  const warn = (msg) => !flags.json && process.stderr.write(color.yellow(msg + "\n"));
+  const warn = (msg: string) => !flags.json && process.stderr.write(color.yellow(msg + "\n"));
   if (staticFirst) warn(`${target ?? "this folder"} has no cresslet.json: it goes live as a public app that anyone can open`);
-  let staticDir, serverFile;
-  if (flags.dir) {
-    staticDir = path.resolve(flags.dir);
+  let staticDir: string, serverFile: string | null;
+  const dir = textFlag(flags, "dir");
+  if (dir) {
+    staticDir = path.resolve(dir);
     if (!fs.existsSync(staticDir)) throw new CliError(`--dir not found: ${flags.dir}`);
     // Every component of the resolved path (also outside this project, e.g. a sibling's node_modules).
     const bad = fs.realpathSync(staticDir).split(path.sep).find((s) => s && notStatic(s, true));
     if (bad) throw new CliError(`refusing to deploy --dir ${flags.dir}: inside ${bad}/ (never served)`);
-    serverFile = flags.server ? path.resolve(flags.server) : null;
+    const server = textFlag(flags, "server");
+    serverFile = server ? path.resolve(server) : null;
   } else {
     const r = await build(project.root, { config: project.config });
     staticDir = r.outDir;
@@ -162,10 +234,12 @@ export async function cmdDeploy({ _: [target], flags }) {
   }
 
   let fileBytes = 0;
-  const skipped = [];
+  const skipped: string[] = [];
   // --dir is any folder (often `.`), a framework's output folder may hold anything: never serve a deploy key,
   // secrets, .git or deps.
-  const skip = (flags.dir || frameworkBuild(project.config)) && ((rel, isDir) => notStatic(rel, isDir) && skipped.push(isDir ? `${rel}/` : rel));
+  const skip = flags.dir || frameworkBuild(project.config)
+    ? (rel: string, isDir: boolean) => notStatic(rel, isDir) && skipped.push(isDir ? `${rel}/` : rel)
+    : undefined;
   const files = listFiles(staticDir, { skip }).map((p) => {
     const data = fs.readFileSync(path.join(staticDir, p));
     fileBytes += data.length;
@@ -174,7 +248,7 @@ export async function cmdDeploy({ _: [target], flags }) {
   if (skipped.length) warn(`not uploaded from --dir (never served): ${skipped.join(", ")}`);
   const server = serverFile ? fs.readFileSync(serverFile, "utf8") : null;
   const bytes = fileBytes + (server?.length ?? 0);
-  const name = flags.name ?? project.link.name ?? (project.config.name || undefined);
+  const name = nameFlag ?? project.link.name ?? (project.config.name || undefined);
   // A static folder (no cresslet.json) has no project source to keep.
   const sources = flags["no-source"] || !fs.existsSync(path.join(project.root, "cresslet.json"))
     ? undefined
@@ -189,14 +263,20 @@ export async function cmdDeploy({ _: [target], flags }) {
     source: "cli",
     sources,
   };
-  let r;
+  type Deployed = {
+    deployKey?: string;
+    app: { name: string; url: string; claimed: boolean; expiresAt: string };
+    deploy: { id: string };
+  };
+  let r: Deployed;
   try {
-    r = await api.post("/v1/deploys", body);
+    r = await api.post<Deployed>("/v1/deploys", body);
   } catch (e) {
     // A server with lower limits than the defaults: deploy without the source rather than fail.
-    if (!sources || e.code !== "too_large" || !/source included/.test(e.message)) throw e;
-    warn(`source not uploaded (${e.message}); \`cresslet pull\` won't have this deploy`);
-    r = await api.post("/v1/deploys", { ...body, sources: undefined });
+    const err = e as CliError; // the API's errors
+    if (!sources || err.code !== "too_large" || !/source included/.test(err.message)) throw e;
+    warn(`source not uploaded (${err.message}); \`cresslet pull\` won't have this deploy`);
+    r = await api.post<Deployed>("/v1/deploys", { ...body, sources: undefined });
   }
   if (r.deployKey) project.saveLink({ name: r.app.name, deployKey: r.deployKey, api: api.base });
   else if (project.link.name !== r.app.name || !project.link.api) project.saveLink({ name: r.app.name, api: api.base });
@@ -224,11 +304,22 @@ const ARTIFACT_FLAGS = ["artifact", "visibility", "keep", "title"];
  * Links from a file or folder to the artifact it was deployed as, in `.cresslet/artifacts.json` next to it (keyed by its
  * name): outside a folder, so rebuilding it (e.g. `dist/`) keeps the link.
  */
-function artifactLink(abs) {
+/** An artifact a file or folder was deployed as, in .cresslet/artifacts.json. */
+interface ArtifactLinkData {
+  name: string;
+  id?: string;
+  api?: string;
+}
+interface ArtifactLink {
+  get: ArtifactLinkData | undefined;
+  save(data: ArtifactLinkData): void;
+}
+
+function artifactLink(abs: string): ArtifactLink {
   const dir = path.dirname(abs);
   const key = path.basename(abs);
   const file = path.join(dir, ".cresslet", "artifacts.json");
-  let all = {};
+  let all: Record<string, ArtifactLinkData> = {};
   try {
     all = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch { /* none yet */ }
@@ -244,7 +335,7 @@ function artifactLink(abs) {
   };
 }
 
-const inGitRepo = (dir) => {
+const inGitRepo = (dir: string): boolean => {
   for (let d = dir; ; d = path.dirname(d)) {
     if (fs.existsSync(path.join(d, ".git"))) return true;
     if (path.dirname(d) === d) return false;
@@ -252,7 +343,7 @@ const inGitRepo = (dir) => {
 };
 
 /** What `deploy [target]` publishes as an artifact, or null for an app. */
-function artifactTarget(target, flags) {
+function artifactTarget(target: string | undefined, flags: Flags): { target: string; link: ArtifactLink } | null {
   const abs = path.resolve(target ?? ".");
   let st;
   try {
@@ -273,7 +364,7 @@ function artifactTarget(target, flags) {
 }
 
 /** Upload a file or folder as an artifact: the linked one (or `--name`) gets the new files at the same URL, else a new one. */
-async function deployArtifact({ target, link }, flags) {
+async function deployArtifact({ target, link }: { target: string; link: ArtifactLink }, flags: Flags) {
   // The server it went to; a new one: the enclosing project's (e.g. `deploy dist --artifact` in a project made with --api).
   const root = link.get?.api ? null : findRoot(path.dirname(path.resolve(target)));
   const via = link.get?.api ?? (root ? readLink(root).api : undefined);
@@ -287,29 +378,31 @@ async function deployArtifact({ target, link }, flags) {
   if (flags.name === true || flags.name === "") throw new CliError("usage: cresslet deploy <file.html|dir> --name <address>");
   const linked = link.get?.api === api.base ? link.get : undefined;
   const name = flags.name === undefined ? linked?.name : String(flags.name);
-  let cur, r, gone = false;
+  let cur: Page | undefined, r: { page: Page }, gone = false;
   if (name) {
     try {
-      cur = (await api.get(`/v1/pages/${encodeURIComponent(name)}`)).page;
+      cur = (await api.get<{ page: Page }>(`/v1/pages/${encodeURIComponent(name)}`)).page;
     } catch (e) {
       // 403: someone else's (a token that can't create artifacts is refused by the POST below).
-      if (e.code !== "not_found" && e.code !== "forbidden") throw e;
+      if ((e as CliError).code !== "not_found" && (e as CliError).code !== "forbidden") throw e;
     }
     // The linked artifact expired or was deleted (its address may even be another artifact's by now).
-    if (flags.name === undefined && (!cur || (linked.id && cur.id !== linked.id))) [cur, gone] = [undefined, true];
+    // (no --name: `name` is the linked one's)
+    if (flags.name === undefined && (!cur || (linked!.id && cur.id !== linked!.id))) [cur, gone] = [undefined, true];
   }
   if (cur) r = await replaceArtifact(api, cur, content, settings);
   else {
     // `--name`: made under that address. A linked one that's gone: a new one (its old address and who could open it
     // aren't reused without asking: pass --name to take the address again).
-    r = await api.post("/v1/pages", { ...(name && !gone ? { name } : {}), title, ...settings, ...content, source: "cli" });
+    r = await api.post<{ page: Page }>("/v1/pages", { ...(name && !gone ? { name } : {}), title, ...settings, ...content, source: "cli" });
   }
   let saved = true;
   try {
     link.save({ name: r.page.name, id: r.page.id, api: api.base });
   } catch (e) {
     saved = false; // it's live anyway: say where, and how to update it
-    if (!flags.json) process.stderr.write(color.yellow(`couldn't save the link (${e.code ?? e.message}): deploy it again with --name ${r.page.name}\n`));
+    const err = e as NodeJS.ErrnoException; // fs errors
+    if (!flags.json) process.stderr.write(color.yellow(`couldn't save the link (${err.code ?? err.message}): deploy it again with --name ${r.page.name}\n`));
   }
   out(flags, () => {
     if (gone) console.log(color.yellow(`${name} is gone (expired, deleted, or not this account's): this is a new artifact at a new address (--name ${name} to take the old one again)`));
@@ -319,21 +412,22 @@ async function deployArtifact({ target, link }, flags) {
   }, { kind: "artifact", created: !cur, ...(gone ? { gone: name } : {}), ...(saved ? {} : { linked: false }), artifact: r.page });
 }
 
-const VIS_RANK = { private: 0, link: 1, public: 2 };
+const VIS_RANK: Record<Visibility, number> = { private: 0, link: 1, public: 2 };
 /**
  * New files and settings for an existing artifact (`cur`, as GET returns it). Settings go before the files (a token
  * that can't change them uploads nothing), except a wider visibility, which goes after: the files are never open to
  * more people than the owner asked for, also when the upload fails.
  */
-async function replaceArtifact(api, cur, content, settings) {
+async function replaceArtifact(api: Client, cur: Page, content: PageContent, settings: PageSettingsChange): Promise<{ page: Page }> {
   const at = `/v1/pages/${encodeURIComponent(cur.name)}`;
-  const { visibility, ...first } = settings;
+  const { visibility, ...rest } = settings;
+  const first: PageSettingsChange = rest;
   const widen = visibility !== undefined && VIS_RANK[visibility] > VIS_RANK[cur.visibility];
   // Widening: the same visibility for now, so a token that can't change it is refused before the upload.
   if (visibility !== undefined) first.visibility = widen ? cur.visibility : visibility;
   if (Object.keys(first).length) await api.patch(at, first);
-  const r = await api.put(at, { ...content, source: "cli" });
-  return widen ? api.patch(at, { visibility }) : r;
+  const r = await api.put<{ page: Page }>(at, { ...content, source: "cli" });
+  return widen ? api.patch<{ page: Page }>(at, { visibility }) : r;
 }
 
 // Server defaults (CRESSLET_MAX_DEPLOY_FILES / _MB); built files and source share them.
@@ -341,10 +435,13 @@ async function replaceArtifact(api, cur, content, settings) {
 const maxFiles = () => Number(process.env.CRESSLET_MAX_DEPLOY_FILES) || 2000;
 const maxBytes = () => (Number(process.env.CRESSLET_MAX_DEPLOY_MB) || 25) * 1024 * 1024;
 
-function readSources(root, { exclude, used, warn }) {
+function readSources(
+  root: string,
+  { exclude, used, warn }: { exclude: string[]; used: { files: number; bytes: number }; warn: (msg: string) => void },
+): WireFile[] | undefined {
   const paths = listSources(root, { exclude });
   if (!paths.length) return undefined; // e.g. `--dir .`: omit `sources`, not `[]`
-  const skip = (why) => {
+  const skip = (why: string) => {
     warn(`source not uploaded: ${why}; add large files to .gitignore or pass --no-source`);
     return undefined;
   };
@@ -360,27 +457,28 @@ function readSources(root, { exclude, used, warn }) {
 }
 
 /** A link's deploy key is only for the app + server it was issued by. */
-const keyOf = (link, app, base) => (link?.name === app && link?.api === base ? link.deployKey : undefined);
+const keyOf = (link: Link | undefined, app: string, base: string) => (link?.name === app && link?.api === base ? link.deployKey : undefined);
 
 /** Client for `app`: the project's deploy key only if its link is for that app on that server. */
-function appClient(flags, project, app) {
+function appClient(flags: Flags, project: Project | null, app: string): Client {
   const base = apiBase(flags, project);
   return client({ flags, project: { link: { api: base, deployKey: keyOf(project?.link, app, base) } } });
 }
 
 /** `cresslet pull [app|url] [--dir d] [--deploy id]`: write the source uploaded with a deploy. */
-export async function cmdPull({ _: [target], flags }) {
+export async function cmdPull({ _: [target], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !target && !flags.app });
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
-  let dest = path.resolve(flags.dir ?? (target || flags.app ? name : project.root));
+  // (no target or --app: `project` is required above)
+  let dest = path.resolve(textFlag(flags, "dir") ?? (target || flags.app ? name : project!.root));
   dest = realDest(dest);
   const before = readLink(dest); // CLI metadata as it was before the pull (never from the response)
   if (fs.existsSync(dest) && fs.readdirSync(dest).filter((f) => f !== ".git").length && !flags.force) {
     throw new CliError(`${dest} is not empty`, "pass --dir <new dir> or --force to overwrite");
   }
   const q = flags.deploy ? `?deploy=${encodeURIComponent(flags.deploy)}` : "";
-  const r = await api.get(`/v1/apps/${encodeURIComponent(name)}/source${q}`);
+  const r = await api.get<{ app: string; deployId: string; files: WireFile[] }>(`/v1/apps/${encodeURIComponent(name)}/source${q}`);
   // Check every path before writing anything.
   const files = r.files.map((f) => ({ ...f, rel: pullPath(f.path) }));
   // The tree may have changed during the request: resolve again right before the first write.
@@ -408,8 +506,8 @@ export async function cmdPull({ _: [target], flags }) {
 }
 
 /** A pulled file's path, relative and `/`-separated; anything that could land outside the copy is refused. */
-export function pullPath(p) {
-  const bad = (why) => new CliError(`refusing to pull ${JSON.stringify(p)}: ${why}`);
+export function pullPath(p: unknown): string {
+  const bad = (why: string) => new CliError(`refusing to pull ${JSON.stringify(p)}: ${why}`);
   if (typeof p !== "string" || !p || p.includes("\0")) throw bad("invalid path");
   if (/^[\\/]/.test(p)) throw bad("absolute path"); // also UNC \\host and \\?\ namespaces
   if (p.includes(":")) throw bad("drive letter or alternate data stream");
@@ -427,14 +525,15 @@ export function pullPath(p) {
  * `dest` with its existing ancestors resolved (macOS /tmp → /private/tmp is fine); refuses `dest` itself
  * being a symlink/junction. What's created under it is checked by `noSymlink`.
  */
-function realDest(dest) {
-  const rest = [];
+function realDest(dest: string): string {
+  const rest: string[] = [];
   for (let p = dest; ; p = path.dirname(p)) {
     let st;
     try {
       st = fs.lstatSync(p);
     } catch (e) {
-      if (e.code !== "ENOENT" || p === path.dirname(p)) throw new CliError(`cannot check ${p} before writing: ${e.code ?? e.message}`);
+      const err = e as NodeJS.ErrnoException;
+      if (err.code !== "ENOENT" || p === path.dirname(p)) throw new CliError(`cannot check ${p} before writing: ${err.code ?? err.message}`);
       rest.unshift(path.basename(p));
       continue;
     }
@@ -444,7 +543,7 @@ function realDest(dest) {
 }
 
 /** Refuse to write through a symlink (or junction) at or above `rel` inside `dest`. */
-function noSymlink(dest, rel) {
+function noSymlink(dest: string, rel: string): void {
   let p = dest;
   for (const s of rel.split(/[\\/]/).filter(Boolean)) {
     p = path.join(p, s);
@@ -452,25 +551,26 @@ function noSymlink(dest, rel) {
     try {
       st = fs.lstatSync(p);
     } catch (e) {
-      if (e.code === "ENOENT") return; // doesn't exist yet: nothing below it does either
-      throw new CliError(`cannot check ${p} before writing: ${e.code ?? e.message}`);
+      const err = e as NodeJS.ErrnoException;
+      if (err.code === "ENOENT") return; // doesn't exist yet: nothing below it does either
+      throw new CliError(`cannot check ${p} before writing: ${err.code ?? err.message}`);
     }
     if (st.isSymbolicLink()) throw new CliError(`refusing to write through a symlink: ${p}`);
   }
 }
 
 // ---------------------------------------------------------------- auth
-export async function cmdLogin({ flags }) {
+export async function cmdLogin({ flags }: Args): Promise<void> {
   const api = client({ flags });
-  let r;
+  let r: Login;
   if (flags.token === "") throw new CliError("usage: cresslet auth login --token <token>");
   if (typeof flags.token === "string") {
     // Token from the studio's Settings page.
-    r = await api.get("/v1/me", { token: flags.token });
-    r.token = flags.token;
+    const me = await api.get<{ account: Account }>("/v1/me", { token: flags.token });
+    r = Object.assign(me, { token: flags.token });
   } else {
     if (flags.token) throw new CliError("usage: cresslet login --token <token>");
-    const meta = await api.get("/v1", { auth: false });
+    const meta = await api.get<{ auth?: { cli?: boolean; github?: boolean } }>("/v1", { auth: false });
     if (meta.auth?.cli) r = await browserLogin(api, flags);
     else if (meta.auth?.github) r = await githubLogin(api, flags); // servers from before browser login
     else throw new CliError(`${api.base} has no login configured`, "use `cresslet login --token <token>` or set CRESSLET_TOKEN");
@@ -481,26 +581,26 @@ export async function cmdLogin({ flags }) {
   out(flags, `${color.green("✔")} logged in as ${color.bold(who(r.account))} on ${api.base}`, { account: r.account, api: api.base });
 }
 
-const who = (a) => (a.github ? `${a.github} (${a.email})` : a.email);
+const who = (a: Account) => (a.github ? `${a.github} (${a.email})` : a.email);
 
 /** Browser login: open the studio, the user enters the code there, poll until they do. */
-async function browserLogin(api, flags) {
-  const d = await api.post("/v1/auth/cli", {}, { auth: false });
+async function browserLogin(api: Client, flags: Flags): Promise<Login> {
+  const d = await api.post<DeviceCode>("/v1/auth/cli", {}, { auth: false });
   process.stderr.write(`open ${color.cyan(d.verificationUri)} and enter ${color.bold(d.userCode)}\n`);
   if (!flags["no-browser"] && process.stderr.isTTY) openUrl(d.verificationUri);
   process.stderr.write(color.dim("waiting for the browser…\n"));
   const deadline = Date.now() + (d.expiresIn || 600) * 1000;
   while (Date.now() < deadline) {
     await new Promise((res) => setTimeout(res, (d.interval || 2) * 1000));
-    const p = await api.post("/v1/auth/cli/token", { deviceCode: d.deviceCode }, { auth: false });
-    if (p.status === "complete") return p;
+    const p = await api.post<LoginPoll>("/v1/auth/cli/token", { deviceCode: d.deviceCode }, { auth: false });
+    if (p.status === "complete") return p as Login;
   }
   throw new CliError("login expired", "run `cresslet login` again");
 }
 
 /** GitHub device flow, proxied by the server: show a code, poll until the user approves it. */
-async function githubLogin(api, flags) {
-  const d = await api.post("/v1/auth/github/device", {}, { auth: false });
+async function githubLogin(api: Client, flags: Flags): Promise<Login> {
+  const d = await api.post<DeviceCode>("/v1/auth/github/device", {}, { auth: false });
   process.stderr.write(`open ${color.cyan(d.verificationUri)} and enter ${color.bold(d.userCode)}\n`);
   if (!flags["no-browser"] && process.stderr.isTTY) openUrl(d.verificationUri);
   process.stderr.write(color.dim("waiting for GitHub…\n"));
@@ -508,14 +608,14 @@ async function githubLogin(api, flags) {
   const deadline = Date.now() + (d.expiresIn || 900) * 1000;
   while (Date.now() < deadline) {
     await new Promise((res) => setTimeout(res, interval));
-    const p = await api.post("/v1/auth/github/device/token", { deviceCode: d.deviceCode }, { auth: false });
-    if (p.status === "complete") return p;
-    if (p.status === "slow_down") interval = (p.interval ?? interval / 1000 + 5) * 1000;
+    const p = await api.post<LoginPoll>("/v1/auth/github/device/token", { deviceCode: d.deviceCode }, { auth: false });
+    if (p.status === "complete") return p as Login;
+    if (p.status === "slow_down") interval = ((p as { interval?: number }).interval ?? interval / 1000 + 5) * 1000;
   }
   throw new CliError("code expired", "run `cresslet login` again");
 }
 
-function openUrl(url) {
+function openUrl(url: string): void {
   // The URL comes from the server: only http(s), and never through a shell.
   try {
     if (!/^https?:$/.test(new URL(url).protocol)) return;
@@ -531,7 +631,7 @@ function openUrl(url) {
   } catch { /* no browser */ }
 }
 
-export async function cmdLogout({ flags }) {
+export async function cmdLogout({ flags }: Args): Promise<void> {
   const base = apiBase(flags);
   const g = readGlobal();
   if (g.tokens) delete g.tokens[base];
@@ -539,14 +639,14 @@ export async function cmdLogout({ flags }) {
   out(flags, `logged out of ${base}`, { api: base });
 }
 
-export async function cmdWhoami({ flags }) {
+export async function cmdWhoami({ flags }: Args): Promise<void> {
   const api = client({ flags });
   if (!api.token) throw new CliError(`not logged in to ${api.base}`, "run `cresslet login`");
-  const r = await api.get("/v1/me");
+  const r = await api.get<{ account: Account }>("/v1/me");
   out(flags, `${who(r.account)} ${color.dim(`(${api.base})`)}`, { ...r, api: api.base });
 }
 
-export async function cmdClaim({ flags }) {
+export async function cmdClaim({ flags }: Args): Promise<void> {
   const project = loadProject();
   const api = client({ flags, project });
   if (!api.token) throw new CliError("login required", "run `cresslet login`");
@@ -556,21 +656,26 @@ export async function cmdClaim({ flags }) {
 }
 
 // ---------------------------------------------------------------- inspect
-export async function cmdApps({ flags }) {
+export async function cmdApps({ flags }: Args): Promise<void> {
   const api = client({ flags });
   if (!api.token) throw new CliError("login required", "run `cresslet login`");
-  const r = await api.get("/v1/apps");
+  const r = await api.get<{ apps: { name: string; url: string; updatedAt: string }[] }>("/v1/apps");
   out(flags, () => {
     if (!r.apps.length) return console.log("no apps yet");
     for (const a of r.apps) console.log(`${color.bold(a.name.padEnd(28))} ${a.url}  ${color.dim(a.updatedAt)}`);
   }, r);
 }
 
-export async function cmdInspect({ _: [target], flags }) {
+export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !target && !flags.app });
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
-  const r = await api.get(`/v1/apps/${encodeURIComponent(name)}`);
+  const r = await api.get<{
+    app: { name: string; url: string; claimed: boolean; expiresAt: string; config: { routes?: string[]; server?: unknown } };
+    runtime: { running: boolean; pid?: number };
+    secrets: string[];
+    deploys: { current: boolean; id: string; createdAt: string; files: number; bytes: number; server: unknown; source: string }[];
+  }>(`/v1/apps/${encodeURIComponent(name)}`);
   out(flags, () => {
     const a = r.app;
     console.log(`${color.bold(a.name)}  ${color.cyan(a.url)}`);
@@ -585,7 +690,7 @@ export async function cmdInspect({ _: [target], flags }) {
   }, r);
 }
 
-function nameFrom(target) {
+function nameFrom(target: string): string {
   try {
     return new URL(target).hostname.split(".")[0];
   } catch {
@@ -593,7 +698,7 @@ function nameFrom(target) {
   }
 }
 
-export async function cmdLogs({ _: [target], flags }) {
+export async function cmdLogs({ _: [target], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !target && !flags.app });
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
@@ -601,8 +706,8 @@ export async function cmdLogs({ _: [target], flags }) {
   const res = await api.get(`/v1/apps/${encodeURIComponent(name)}/logs?n=${Number(flags.n ?? 100)}${follow ? "&follow=1" : ""}`, { stream: true });
   const dec = new TextDecoder();
   let buf = "";
-  const kindColor = { stderr: color.red, system: color.yellow, request: color.dim, stdout: (s) => s };
-  for await (const chunk of res.body) {
+  const kindColor: Record<string, (s: unknown) => string> = { stderr: color.red, system: color.yellow, request: color.dim, stdout: (s) => s as string };
+  for await (const chunk of res.body!) { // (an ok reply to GET has a body)
     buf += dec.decode(chunk, { stream: true });
     let i;
     while ((i = buf.indexOf("\n")) >= 0) {
@@ -613,22 +718,24 @@ export async function cmdLogs({ _: [target], flags }) {
         console.log(line);
         continue;
       }
-      const l = JSON.parse(line);
+      const l = JSON.parse(line) as { t: number | string; kind: string; msg: string };
       const time = new Date(l.t).toISOString().slice(11, 23);
       console.log(`${color.dim(time)} ${(kindColor[l.kind] ?? String)(l.msg)}`);
     }
   }
 }
 
-export async function cmdDb({ _: [sql], flags }) {
+export async function cmdDb({ _: [sql], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
   if (sql) {
-    const r = await api.post(`/v1/apps/${encodeURIComponent(name)}/db/query`, { sql });
+    const r = await api.post<{ rows: unknown[] }>(`/v1/apps/${encodeURIComponent(name)}/db/query`, { sql });
     return out(flags, () => console.table(r.rows), r);
   }
-  const r = await api.get(`/v1/apps/${encodeURIComponent(name)}/db?limit=${Number(flags.limit ?? 20)}`);
+  const r = await api.get<{ tables: Record<string, { count: number; schema: string; rows: unknown[] }> }>(
+    `/v1/apps/${encodeURIComponent(name)}/db?limit=${Number(flags.limit ?? 20)}`,
+  );
   out(flags, () => {
     const names = Object.keys(r.tables);
     if (!names.length) return console.log("database is empty");
@@ -640,17 +747,17 @@ export async function cmdDb({ _: [sql], flags }) {
   }, r);
 }
 
-export async function cmdSecrets({ _: [sub, ...rest], flags }) {
+export async function cmdSecrets({ _: [sub, ...rest], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
   if (!sub || sub === "list" || sub === "ls") {
-    const r = await api.get(`/v1/apps/${encodeURIComponent(name)}/secrets`);
+    const r = await api.get<{ keys: string[] }>(`/v1/apps/${encodeURIComponent(name)}/secrets`);
     return out(flags, r.keys.length ? r.keys.join("\n") : "no secrets", r);
   }
   if (sub === "set") {
     if (!rest.length) throw new CliError("usage: cresslet secrets set KEY=value [KEY2=value2…]");
-    const body = {};
+    const body: Record<string, string> = {};
     for (const kv of rest) {
       const i = kv.indexOf("=");
       if (i < 1) throw new CliError(`expected KEY=value, got ${kv}`);
@@ -667,30 +774,30 @@ export async function cmdSecrets({ _: [sub, ...rest], flags }) {
   throw new CliError(`unknown secrets command: ${sub}`, "use list | set KEY=value | unset KEY");
 }
 
-export async function cmdDomains({ _: [sub, domain], flags }) {
+export async function cmdDomains({ _: [sub, domain], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
   const base = `/v1/apps/${encodeURIComponent(name)}/domains`;
-  const show = (d) => {
+  const show = (d: Domain) => {
     console.log(`${color.bold(d.domain)}  ${d.verified ? color.green("verified") : color.yellow("pending")}`);
     if (!d.verified) for (const x of d.dns) console.log(`  ${x.type.padEnd(5)} ${x.name}  →  ${x.value}`);
   };
   if (!sub || sub === "list" || sub === "ls") {
-    const r = await api.get(base);
+    const r = await api.get<{ domains: Domain[] }>(base);
     return out(flags, () => (r.domains.length ? r.domains.forEach(show) : console.log("no custom domains")), r);
   }
   if (!domain) throw new CliError(`usage: cresslet domains ${sub} <domain>`);
   const d = encodeURIComponent(domain);
   if (sub === "add") {
-    const r = await api.post(base, { domain });
+    const r = await api.post<{ domain: Domain }>(base, { domain });
     return out(flags, () => {
       show(r.domain);
       if (!r.domain.verified) console.log(color.dim(`  create these DNS records, then: cresslet domains verify ${r.domain.domain}`));
     }, r);
   }
   if (sub === "verify") {
-    const r = await api.post(`${base}/${d}/verify`);
+    const r = await api.post<{ domain: Domain }>(`${base}/${d}/verify`);
     return out(flags, `${color.green("✔")} ${r.domain.domain} verified`, r);
   }
   if (sub === "rm" || sub === "remove") {
@@ -700,37 +807,38 @@ export async function cmdDomains({ _: [sub, domain], flags }) {
   throw new CliError(`unknown domains command: ${sub}`, "use list | add <domain> | verify <domain> | rm <domain>");
 }
 
-export async function cmdEgress({ _: [sub, ...hosts], flags }) {
+export async function cmdEgress({ _: [sub, ...hosts], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
   const p = `/v1/apps/${encodeURIComponent(name)}/egress`;
-  const show = (r) => (r.allow ? (r.allow.length ? r.allow.join("\n") : "no outbound hosts allowed") : "any public host (no allowlist)");
+  type Egress = { allow: string[] | null };
+  const show = (r: Egress) => (r.allow ? (r.allow.length ? r.allow.join("\n") : "no outbound hosts allowed") : "any public host (no allowlist)");
   if (!sub || sub === "show") {
-    const r = await api.get(p);
+    const r = await api.get<Egress>(p);
     return out(flags, show(r), r);
   }
   if (sub === "allow") {
     if (!hosts.length) throw new CliError("usage: cresslet egress allow <host…>", "e.g. api.stripe.com '*.openai.com'");
-    const r = await api.put(p, { allow: hosts });
+    const r = await api.put<{ allow: string[] }>(p, { allow: hosts });
     return out(flags, `${color.green("✔")} allowlist: ${r.allow.join(", ")}`, r);
   }
   if (sub === "clear") {
-    const r = await api.put(p, { allow: null });
+    const r = await api.put<Egress>(p, { allow: null });
     return out(flags, `${color.green("✔")} ${show(r)}`, r);
   }
   throw new CliError(`unknown egress command: ${sub}`, "use show | allow <host…> | clear");
 }
 
-export async function cmdRollback({ _: [deployId], flags }) {
+export async function cmdRollback({ _: [deployId], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
-  const r = await api.post(`/v1/apps/${encodeURIComponent(name)}/rollback`, { deployId });
+  const r = await api.post<{ app: { currentDeployId: string } }>(`/v1/apps/${encodeURIComponent(name)}/rollback`, { deployId });
   out(flags, `${color.green("✔")} ${name} now serving ${r.app.currentDeployId}`, r);
 }
 
-export async function cmdDelete({ flags }) {
+export async function cmdDelete({ flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
@@ -746,27 +854,34 @@ export async function cmdDelete({ flags }) {
   out(flags, `${color.green("✔")} deleted ${name}`, r);
 }
 
-export async function cmdOpen({ flags }) {
+export async function cmdOpen({ flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const api = appClient(flags, project, name);
-  const r = await api.get(`/v1/apps/${encodeURIComponent(name)}`);
+  const r = await api.get<{ app: { url: string } }>(`/v1/apps/${encodeURIComponent(name)}`);
   openUrl(r.app.url);
   console.log(r.app.url);
 }
 
 // ---------------------------------------------------------------- artifacts (static HTML with a visibility and retention; API: /v1/pages)
-const VISIBILITIES = ["private", "link", "public"];
-const VIS_TEXT = { private: "private (you + people you share it with)", link: "anyone with the link", public: "public" };
-const keepText = (d) => (d === null ? "forever" : `${d} day${d === 1 ? "" : "s"}`);
+const VISIBILITIES: string[] = ["private", "link", "public"] satisfies Visibility[];
+const VIS_TEXT: Record<string, string> = { private: "private (you + people you share it with)", link: "anyone with the link", public: "public" };
+const keepText = (d: number | null) => (d === null ? "forever" : `${d} day${d === 1 ? "" : "s"}`);
 
 /** `--visibility` / `--keep` (days or "forever") / `--title`, as the API's fields; only the ones given. */
-function pageSettings(flags, prefix = "") {
-  const out = {};
+/** Settings to change (only the ones given); `title`: null for the server's default. */
+interface PageSettingsChange {
+  visibility?: Visibility;
+  retentionDays?: number | null;
+  title?: string | null;
+}
+
+function pageSettings(flags: Flags, prefix = ""): PageSettingsChange {
+  const out: PageSettingsChange = {};
   const vis = flags[`${prefix}visibility`];
   if (vis !== undefined) {
-    if (!VISIBILITIES.includes(vis)) throw new CliError(`--${prefix}visibility must be one of ${VISIBILITIES.join(", ")}`);
-    out.visibility = vis;
+    if (!VISIBILITIES.includes(vis as string)) throw new CliError(`--${prefix}visibility must be one of ${VISIBILITIES.join(", ")}`);
+    out.visibility = vis as Visibility; // one of VISIBILITIES
   }
   const keep = flags[`${prefix}keep`];
   if (keep !== undefined) {
@@ -779,7 +894,10 @@ function pageSettings(flags, prefix = "") {
 }
 
 /** One .html file (`html`), or a folder's files (hidden ones and node_modules left out; symlinks not followed). */
-function pageContent(target) {
+/** What an artifact upload sends: one HTML file, or a folder's files. */
+type PageContent = { html: string } | { files: WireFile[] };
+
+function pageContent(target: string): { content: PageContent; title: string } {
   const abs = path.resolve(target);
   let st;
   try {
@@ -791,8 +909,8 @@ function pageContent(target) {
     if (!/\.html?$/i.test(abs)) throw new CliError(`${target} isn't an .html file`, "upload one HTML file, or a folder with an index.html");
     return { content: { html: fs.readFileSync(abs, "utf8") }, title: path.basename(abs).replace(/\.html?$/i, "") };
   }
-  const files = [];
-  const walk = (dir, rel) => {
+  const files: WireFile[] = [];
+  const walk = (dir: string, rel: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       if (e.name.startsWith(".") || e.name === "node_modules") continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
@@ -805,27 +923,27 @@ function pageContent(target) {
   return { content: { files }, title: path.basename(abs) };
 }
 
-const accountClient = (flags) => {
+const accountClient = (flags: Flags): Client => {
   const api = client({ flags });
   if (!api.token) throw new CliError("login required", "run `cresslet login`");
   return api;
 };
 
-function showPage(p) {
+function showPage(p: Page): void {
   console.log(`${color.bold(p.title ?? p.name)}  ${color.cyan(p.url)}`);
   console.log(`  who can open: ${VIS_TEXT[p.visibility] ?? p.visibility}`);
   console.log(`  kept:         ${p.retentionDays === null ? "forever" : `${keepText(p.retentionDays)} (until ${p.expiresAt})`}`);
   console.log(`  ${color.dim(`${p.name} · ${p.files} file${p.files === 1 ? "" : "s"}, ${formatBytes(p.bytes)}${p.access && p.access !== "owner" ? ` · you: ${p.access}` : ""}`)}`);
 }
 
-export async function cmdArtifact({ _: [sub, target, file], flags }) {
+export async function cmdArtifact({ _: [sub, target, file], flags }: Args): Promise<void> {
   const api = accountClient(flags);
-  const page = (t) => {
+  const page = (t: string | undefined) => {
     if (!t) throw new CliError(`usage: cresslet artifact ${sub} <name|url>${sub === "update" ? " <file|dir>" : ""}`);
     return encodeURIComponent(nameFrom(t));
   };
   if (!sub || sub === "ls" || sub === "list") {
-    const r = await api.get("/v1/pages");
+    const r = await api.get<{ pages: Page[] }>("/v1/pages");
     return out(flags, () => {
       if (!r.pages.length) return console.log("no artifacts yet (cresslet deploy <file.html>, or a folder: cresslet deploy <dir> --artifact)");
       for (const p of r.pages) {
@@ -839,21 +957,21 @@ export async function cmdArtifact({ _: [sub, target, file], flags }) {
     if (flags.name === true || flags.name === "") throw new CliError("--name needs an address, e.g. --name q4-report");
     const { content, title } = pageContent(target);
     const name = flags.name === undefined ? {} : { name: String(flags.name) };
-    const r = await api.post("/v1/pages", { ...name, title, ...pageSettings(flags), ...content, source: "cli" });
+    const r = await api.post<{ page: Page }>("/v1/pages", { ...name, title, ...pageSettings(flags), ...content, source: "cli" });
     return out(flags, () => {
       console.log(`${color.green("✔")} uploaded`);
       showPage(r.page);
     }, r);
   }
   if (sub === "show" || sub === "info") {
-    const r = await api.get(`/v1/pages/${page(target)}`);
+    const r = await api.get<{ page: Page }>(`/v1/pages/${page(target)}`);
     return out(flags, () => showPage(r.page), r);
   }
   if (sub === "update") {
     if (!file) throw new CliError("usage: cresslet artifact update <name|url> <file.html|dir>");
     const { content } = pageContent(file);
     const settings = pageSettings(flags);
-    const cur = (await api.get(`/v1/pages/${page(target)}`)).page;
+    const cur = (await api.get<{ page: Page }>(`/v1/pages/${page(target)}`)).page;
     const r = await replaceArtifact(api, cur, content, settings);
     return out(flags, () => {
       console.log(`${color.green("✔")} updated (same link)`);
@@ -863,12 +981,12 @@ export async function cmdArtifact({ _: [sub, target, file], flags }) {
   if (sub === "set") {
     const change = pageSettings(flags);
     if (!Object.keys(change).length) throw new CliError("nothing to change", "pass --visibility, --keep and/or --title");
-    const r = await api.patch(`/v1/pages/${page(target)}`, change);
+    const r = await api.patch<{ page: Page }>(`/v1/pages/${page(target)}`, change);
     return out(flags, () => showPage(r.page), r);
   }
   if (sub === "open") {
     // Private artifacts: a one-time sign-in link (the browser keeps a session cookie for that artifact).
-    const r = await api.post(`/v1/pages/${page(target)}/view`, {});
+    const r = await api.post<{ url: string }>(`/v1/pages/${page(target)}/view`, {});
     if (!flags.json) openUrl(r.url);
     return out(flags, r.url, r);
   }
@@ -885,16 +1003,17 @@ export async function cmdArtifact({ _: [sub, target, file], flags }) {
 }
 
 /** The account's defaults for new artifacts: `--artifact-visibility`, `--artifact-keep` (or the old `--page-*`); `--reset` = the server's. */
-export async function cmdSettings({ flags }) {
+export async function cmdSettings({ flags }: Args): Promise<void> {
   const api = accountClient(flags);
   const f = { ...flags };
   for (const k of ["visibility", "keep"]) f[`artifact-${k}`] ??= flags[`page-${k}`];
   const change = pageSettings(f, "artifact-");
+  type Settings = { pages: PageSettings; defaults: { pages: PageSettings } };
   const r = flags.reset
-    ? await api.put("/v1/me/settings", { pages: null })
+    ? await api.put<Settings>("/v1/me/settings", { pages: null })
     : Object.keys(change).length
-    ? await api.put("/v1/me/settings", { pages: change })
-    : await api.get("/v1/me/settings");
+    ? await api.put<Settings>("/v1/me/settings", { pages: change })
+    : await api.get<Settings>("/v1/me/settings");
   out(flags, () => {
     console.log(color.bold("new artifacts"));
     console.log(`  who can open: ${VIS_TEXT[r.pages.visibility]}`);
@@ -904,10 +1023,10 @@ export async function cmdSettings({ flags }) {
 }
 
 // ---------------------------------------------------------------- config
-const CONFIG_KEYS = { api: "Cresslet server URL" };
+const CONFIG_KEYS: Record<string, string> = { api: "Cresslet server URL" };
 
 /** `config [list] | get <key> | set <key> <value> | unset <key>`, stored in ~/.config/cresslet/config.json. */
-export async function cmdConfig({ _: [sub = "list", key, value], flags }) {
+export async function cmdConfig({ _: [sub = "list", key, value], flags }: Args): Promise<void> {
   const usage = "usage: cresslet config [list] | get <key> | set <key> <value> | unset <key>";
   const keys = `keys: ${Object.entries(CONFIG_KEYS).map(([k, d]) => `${k} (${d})`).join(", ")}`;
   const file = path.join(configDir(), "config.json");
@@ -928,7 +1047,7 @@ export async function cmdConfig({ _: [sub = "list", key, value], flags }) {
   }
   const g = readGlobal();
   if (sub === "unset") {
-    delete g[key];
+    delete g[key as keyof GlobalConfig]; // a CONFIG_KEYS key
     writeGlobal(g);
     return out(flags, `${color.green("✔")} api reset to ${DEFAULT_API}`, { key, value: DEFAULT_API });
   }
