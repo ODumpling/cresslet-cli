@@ -1293,3 +1293,70 @@ test("dev: editing cresslet.json updates routes and crons live; invalid JSON kee
     delete globals.lastCron;
   }
 });
+
+const gitIn = (dir: string, ...args: string[]) => run("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: dir });
+
+test("deploy records the git commit it was built from (a clean checkout only)", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
+  await gitIn(dir, "init", "-q", "-b", "main");
+  await gitIn(dir, "remote", "add", "origin", "git@github.com:octo/shop.git");
+  await gitIn(dir, "add", "-A");
+  await gitIn(dir, "commit", "-qm", "init");
+  const sha = (await gitIn(dir, "rev-parse", "HEAD")).stdout.trim();
+  const api = await fakeApi({ "POST /v1/deploys": DEPLOYED });
+  try {
+    await cli(dir, api, "deploy");
+    assert.deepEqual(api.calls.at(-1).body.git, { sha, branch: "main", repo: "octo/shop" });
+    fs.writeFileSync(path.join(dir, "index.html"), "changed");
+    const r = await cli(dir, api, "deploy");
+    assert.equal(api.calls.at(-1).body.git, undefined);
+    assert.match(r.stderr, /uncommitted changes/);
+    // Not a git checkout: nothing sent.
+    const plain = copyFixture();
+    fs.writeFileSync(path.join(plain, "cresslet.json"), JSON.stringify({ name: "a" }));
+    await cli(plain, api, "deploy");
+    assert.equal(api.calls.at(-1).body.git, undefined);
+  } finally {
+    await api.close();
+  }
+});
+
+test("git status / connect / sync talk to the app's repository endpoints; sync only on top of GitHub's head", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
+  await gitIn(dir, "init", "-q", "-b", "main");
+  await gitIn(dir, "add", "-A");
+  await gitIn(dir, "commit", "-qm", "init");
+  const sha = (await gitIn(dir, "rev-parse", "HEAD")).stdout.trim();
+  const status = () => ({
+    repo: { fullName: "octo/shop", url: "https://github.com/octo/shop", defaultBranch: "main", subdir: "" },
+    defaultBranch: "main", mainSha: sha, branches: [{ name: "main", sha, protected: false }],
+  });
+  const api = await fakeApi({
+    "GET /v1/apps/a/git/status": status,
+    "POST /v1/apps/a/git/connect": (b) => ({ $status: 201, repo: { fullName: `${b.owner}/${b.repo}`, url: "u" }, sha }),
+    "POST /v1/apps/a/git/sync": () => ({ branch: "main", sha: "f".repeat(40), changed: true }),
+  });
+  try {
+    assert.match((await cli(dir, api, "git", "status")).stdout, /octo\/shop[\s\S]*● main/);
+    await cli(dir, api, "git", "connect", "https://github.com/octo/shop.git", "--push");
+    const connect = api.calls.find((c) => c.path === "/v1/apps/a/git/connect").body;
+    assert.equal(connect.owner, "octo");
+    assert.equal(connect.initialSync, "push");
+    assert.ok(connect.files.some((f: WireFile) => f.path === "cresslet.json"));
+    const s = await cli(dir, api, "git", "sync", "-m", "from the CLI");
+    assert.match(s.stdout, /committed to main: fffffff/);
+    const sync = api.calls.find((c) => c.path === "/v1/apps/a/git/sync").body;
+    assert.deepEqual([sync.branch, sync.baseSha, sync.message], ["main", sha, "from the CLI"]);
+    // This checkout is behind GitHub: refused, nothing sent.
+    await gitIn(dir, "commit", "-qm", "local", "--allow-empty");
+    const n = api.calls.length;
+    const err = await cli(dir, api, "git", "sync").catch((e: ExecError) => e);
+    assert.match((err as ExecError).stderr, /git pull first/);
+    assert.equal(api.calls.filter((c) => c.path.endsWith("/git/sync")).length, 1);
+    void n;
+  } finally {
+    await api.close();
+  }
+});
