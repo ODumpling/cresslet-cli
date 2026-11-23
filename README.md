@@ -89,6 +89,15 @@ export default defineConfig({ plugins: [cresslet(), tanstackStart(), viteReact()
 | `config [list] \| get api \| set api <url> \| unset api` | CLI settings in `~/.config/cresslet/config.json`. `list` shows the server in use and where it comes from (`--api` > `CRESSLET_API` > project link > config > default) |
 | `settings [--artifact-visibility v] [--artifact-keep d\|forever] [--reset]` | your defaults for new artifacts (`--reset`: the server's; `--page-*` works too) |
 | `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `login` / `logout` / `whoami` work too |
+| `connect [--agent <name>] [--eager]` | stdio MCP server that bridges a desktop coding agent (Claude Code, Codex, T3 Code) to an open Cresslet Studio project tab. Requires `cresslet login`. Prints a short pairing code to stderr (and returns it if a tool is called before pairing); enter the code in the Studio project's **Connect agent** panel and click **Allow** |
+
+### Live Link (`cresslet connect`)
+
+Register `cresslet connect` as a stdio MCP server in your desktop agent (for example, `claude mcp add cresslet -- npx cresslet connect`):
+
+- Exposes the same 7 Studio builder tools (`list_files`, `read_file`, `write_file`, `edit_file`, `delete_file`, `run_command`, `read_dev_log`) plus `commit_change(title)` to mark a turn boundary (and commit a stack change on GitHub-linked apps).
+- Pairs with one open Studio project tab belonging to your own account via a short one-time code (`XXXX-XXXX`).
+- Deploys started via `run_command` still require clicking **Approve deploy** in the Studio tab.
 
 Global: `--api <url>`, `--json`, `--app <name>`. Env: `CRESSLET_API`, `CRESSLET_TOKEN`, `CRESSLET_DEPLOY_KEY` (CI).
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as c from "../lib/commands.ts";
+import { cmdConnect } from "../lib/connect.ts";
 import { createRequire } from "node:module";
 import { type Args, CliError, color, parseArgs } from "../lib/util.ts";
 
@@ -33,6 +34,7 @@ const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> 
   artifact: [c.cmdArtifact, "artifact [ls|show|set|open|rm]", "your artifacts (static HTML with who-can-open + expiry)"],
   config: [c.cmdConfig, "config [get|set|unset api <url>]", "CLI settings, e.g. the server (default https://cresslet.dev)"],
   settings: [c.cmdSettings, "settings [options]", "defaults for new artifacts: --artifact-visibility v, --artifact-keep d, --reset"],
+  connect: [(a) => cmdConnect(a, VERSION), "connect [--agent <name>] [--eager]", "bridge a desktop MCP agent to an open Cresslet Studio tab"],
 };
 
 const DEPLOY_HELP = `${color.bold("deploy")} picks what to publish:
@@ -95,7 +97,7 @@ if (wantsHelp) {
 }
 
 try {
-  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull"] }));
+  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull", "eager", "allow-insecure"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);
