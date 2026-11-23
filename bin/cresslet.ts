@@ -97,7 +97,7 @@ if (wantsHelp) {
 }
 
 try {
-  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull", "eager"] }));
+  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull", "eager", "allow-insecure"] }));
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);

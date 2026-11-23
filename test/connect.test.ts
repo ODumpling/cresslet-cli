@@ -6,9 +6,12 @@ import { PassThrough } from "node:stream";
 import { WebSocketServer } from "ws";
 import { CONNECT_TOOLS, relayWsUrl, runConnectServer } from "../lib/connect.ts";
 
-test("relayWsUrl converts http/https API bases to ws/wss relay URLs", () => {
+test("relayWsUrl converts http/https API bases to ws/wss relay URLs and refuses remote cleartext", () => {
   assert.equal(relayWsUrl("https://cresslet.dev"), "wss://cresslet.dev/v1/workspace/relay");
   assert.equal(relayWsUrl("http://localhost:8787/"), "ws://localhost:8787/v1/workspace/relay");
+  assert.throws(() => relayWsUrl("http://remote.example.com"), /cleartext/i);
+  assert.equal(relayWsUrl("http://remote.example.com", { allowInsecure: true }), "ws://remote.example.com/v1/workspace/relay");
+  assert.throws(() => relayWsUrl("not-a-url"), /invalid API URL/i);
 });
 
 test("stdio MCP server handles initialize, tools/list, lazy pairing, tool calls, and cancellation", async () => {
@@ -110,15 +113,16 @@ test("stdio MCP server handles initialize, tools/list, lazy pairing, tool calls,
     assert.equal(okRes.isError, undefined);
     assert.equal(okRes.content[0].text, "hello from studio");
 
-    // 5. notifications/cancelled sends tool_cancel.
+    // 5. notifications/cancelled sends tool_cancel and suppresses the MCP reply (per MCP spec).
     send({ id: 5, method: "tools/call", params: { name: "run_command", arguments: { command: "sleep 60" } } });
     await new Promise((r) => setTimeout(r, 30));
     send({ method: "notifications/cancelled", params: { requestId: 5 } });
-    const cancelled = await nextReply();
-    const cRes = cancelled.result as { isError?: boolean; content: { text: string }[] };
-    assert.equal(cRes.isError, true);
-    assert.match(cRes.content[0].text, /Cancelled/);
+    await new Promise((r) => setTimeout(r, 50));
     assert.ok(seen.some((m) => m.type === "tool_cancel"));
+    // Next request still works cleanly and receives its own reply (not id 5's).
+    send({ id: 6, method: "ping" });
+    const pong = await nextReply();
+    assert.equal(pong.id, 6);
 
     input.end();
     await done;
