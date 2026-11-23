@@ -1,6 +1,6 @@
 {
   "name": "cresslet",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Cresslet SDK and CLI: import your app's db, files and secrets; create, run, and deploy small web apps.",
   "license": "MIT",
   "keywords": [
