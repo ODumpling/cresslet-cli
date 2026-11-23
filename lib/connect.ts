@@ -137,6 +137,7 @@ export async function runConnectServer({
 
   const byCallId = new Map<string, PendingCall>();
   const byRpcId = new Map<string, string>(); // JSON.stringify(rpcId) → callId
+  const cancelledRpcIds = new Set<string>(); // requests cancelled while awaiting ensureRelay()
 
   const clearTimers = () => {
     clearTimeout(handshakeTimer);
@@ -312,13 +313,16 @@ export async function runConnectServer({
     if (method === "notifications/cancelled") {
       const reqId = params.requestId;
       if (typeof reqId === "string" || typeof reqId === "number") {
-        const callId = byRpcId.get(JSON.stringify(reqId));
+        const key = JSON.stringify(reqId);
+        const callId = byRpcId.get(key);
         if (callId) {
           if (ws && state === "paired" && ws.readyState === 1) {
             try { ws.send(JSON.stringify({ v: 1, type: "tool_cancel", id: callId })); } catch { /* closing */ }
           }
           // Settle and remove locally so cancelled calls never hang (MCP spec: no response sent).
           settleCall(callId, { text: "Cancelled.", error: true, cancelled: true });
+        } else {
+          cancelledRpcIds.add(key);
         }
       }
       return;
@@ -369,8 +373,10 @@ export async function runConnectServer({
         return;
       }
 
+      const rpcKey = JSON.stringify(id);
       if (state !== "paired") {
         const r = await ensureRelay();
+        if (cancelledRpcIds.delete(rpcKey)) return;
         if (!r.paired) {
           const text = r.code
             ? `Not paired with Cresslet Studio yet. Ask the user to open their project in Cresslet Studio, click Connect agent, enter code ${r.code}, and click Allow — then retry this tool call.`
@@ -379,6 +385,7 @@ export async function runConnectServer({
           return;
         }
       }
+      if (cancelledRpcIds.delete(rpcKey)) return;
 
       if (!ws || ws.readyState !== 1) {
         writeRpc({ id, result: { content: [{ type: "text", text: "Not connected to Cresslet Studio." }], isError: true } });
@@ -388,11 +395,17 @@ export async function runConnectServer({
       const callId = `c${++seq}`;
       const resultP = new Promise<{ text: string; error?: boolean; cancelled?: boolean }>((resolve) => {
         const timer = setTimeout(() => {
-          settleCall(callId, { text: "Tool call timed out waiting for Cresslet Studio.", error: true });
+          if (ws && state === "paired" && ws.readyState === 1) {
+            try { ws.send(JSON.stringify({ v: 1, type: "tool_cancel", id: callId })); } catch { /* closing */ }
+          }
+          settleCall(callId, {
+            text: "Tool call timed out waiting for Cresslet Studio (cancellation sent; an in-flight write or commit may already have completed).",
+            error: true,
+          });
         }, callTimeoutMs);
         timer.unref();
         byCallId.set(callId, { callId, rpcId: id, timer, resolve });
-        byRpcId.set(JSON.stringify(id), callId);
+        byRpcId.set(rpcKey, callId);
       });
       try {
         ws.send(JSON.stringify({ v: 1, type: "tool_call", id: callId, name, arguments: args }));
