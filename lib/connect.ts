@@ -3,7 +3,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { WebSocket } from "ws";
 import { client } from "./api.ts";
-import { type Args, CliError, color, findRoot, readLink, textFlag } from "./util.ts";
+import { type Args, CliError, color, textFlag } from "./util.ts";
 
 const SUPPORTED_MCP_VERSIONS = new Set(["2025-06-18", "2025-03-26", "2024-11-05"]);
 const DEFAULT_MCP_VERSION = "2025-03-26";
@@ -465,10 +465,16 @@ export async function runConnectServer({
   });
 }
 
+/**
+ * Where `connect` sends the account token: `--api` > `CRESSLET_API` > global config > default. Never the workspace's
+ * `.cresslet/app.json`: a cloned repo could name another server and receive the token in the relay hello.
+ */
+export function connectClient(flags: Args["flags"]) {
+  return client({ flags });
+}
+
 export async function cmdConnect(args: Args, version: string): Promise<void> {
-  const root = findRoot();
-  const project = root ? { link: readLink(root) } : undefined;
-  const c = client({ flags: args.flags, project });
+  const c = connectClient(args.flags);
   if (!c.token) {
     throw new CliError(
       "not logged in",
