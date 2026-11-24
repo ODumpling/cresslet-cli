@@ -1525,6 +1525,12 @@ test("environments: deploy --env staging (its own route, never /v1/deploys), pro
     assert.match(seeded.stdout, /snapshot of production's/);
     await cli(dir, api, "env", "rm", "staging", "-y");
     assert.equal(api.calls.at(-1).method, "DELETE");
+    // `--env=` isn't production, and a command without environments refuses --env (delete would take the whole app).
+    for (const args of [["deploy", "--env="], ["secrets", "set", "A=1", "--env="], ["rollback", "--env="]]) {
+      await assert.rejects(cli(dir, api, ...args), (e: ExecError) => /--env needs an environment/.test(e.stderr), args.join(" "));
+    }
+    await assert.rejects(cli(dir, api, "delete", "-y", "--env", "staging"), (e: ExecError) => /--env isn't an option of delete/.test(e.stderr));
+    assert.ok(!api.calls.some((c: Wire) => c.method === "DELETE" && c.path === p));
     const ls = await cli(dir, api, "env");
     assert.match(ls.stdout, /production +http:\/\/a\.test +dep_p1/);
   } finally {
@@ -1548,9 +1554,10 @@ test("environments: a server without them refuses every --env command; nothing r
   });
   try {
     await assert.rejects(cli(dir, api, "deploy", "--env", "staging"), (e: ExecError) => e.code === 1);
-    for (const args of [["secrets", "set", "A=1"], ["secrets", "unset", "A"], ["rollback"], ["logs"], ["db"], ["promote", "-y"]]) {
+    for (const args of [["secrets", "set", "A=1"], ["secrets", "unset", "A"], ["rollback"], ["logs"], ["db"]]) {
       await assert.rejects(cli(dir, api, ...args, "--env", "staging"), (e: ExecError) => /doesn't have environments/.test(e.stderr), args.join(" "));
     }
+    await assert.rejects(cli(dir, api, "promote", "-y"), (e: ExecError) => /doesn't have environments/.test(e.stderr));
     assert.ok(!api.calls.some((c: Wire) => c.path === "/v1/deploys" || c.method === "PUT" || c.path.includes("/rollback") || c.path.includes("/logs") || c.path.includes("/db")),
       JSON.stringify(api.calls.map((c: Wire) => `${c.method} ${c.path}`)));
   } finally {

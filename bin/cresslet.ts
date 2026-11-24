@@ -98,8 +98,14 @@ if (wantsHelp) {
   process.exit(0);
 }
 
+/** Commands that act on one of an app's environments (`--env staging`); anywhere else `--env` is refused, not ignored. */
+const ENV_COMMANDS = new Set(["deploy", "rollback", "logs", "db", "secrets", "inspect"]);
 try {
-  await entry[0](parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull", "eager", "allow-insecure"] }));
+  const parsed = parseArgs(args, { bool: ["json", "follow", "f", "yes", "y", "force", "no-browser", "no-source", "reset", "artifact", "push", "pull", "eager", "allow-insecure"] });
+  if (parsed.flags.env !== undefined && !ENV_COMMANDS.has(name)) {
+    throw new CliError(`--env isn't an option of ${name}`, `environments: ${[...ENV_COMMANDS].join(", ")} --env <env>; promote --from <env>; env ls|seed|rm`);
+  }
+  await entry[0](parsed);
 } catch (e) {
   if (e instanceof CliError) {
     console.error(`${color.red("✖")} ${e.message}`);

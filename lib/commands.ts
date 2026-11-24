@@ -937,6 +937,8 @@ function nameFrom(target: string): string {
 /** The environment a command acts on: `--env staging`, or a staging URL; undefined: production. */
 function envFrom(flags: Flags, target?: string): string | undefined {
   const flag = textFlag(flags, "env");
+  // (`--env=` is no environment, not production.)
+  if (flag !== undefined && !flag.trim()) throw new CliError("--env needs an environment", "e.g. --env staging (or --env production)");
   if (flag !== undefined) return flag === "production" ? undefined : flag;
   try {
     const label = target ? new URL(target).hostname.split(".")[0] : "";
@@ -1133,8 +1135,9 @@ export async function cmdPromote({ flags }: Args): Promise<void> {
   const src = envs.environments.find((e) => e.name === from);
   const prod = envs.environments.find((e) => e.name === "production");
   if (!src?.currentDeployId) throw new CliError(`nothing is deployed to ${name}'s ${from}`, `cresslet deploy --env ${from}`);
-  if (src.currentDeployId === prod?.currentDeployId) return out(flags, `${name}: production already serves ${src.currentDeployId}`, { promoted: false, deployId: src.currentDeployId });
-  if (!flags.yes && !flags.y) {
+  // Already: the server only tags its commit if an earlier promotion's tag failed (no question: nothing changes).
+  const already = src.currentDeployId === prod?.currentDeployId;
+  if (!already && !flags.yes && !flags.y) {
     const a = await ask(`promote ${src.currentDeployId} from ${from} to production (${name})? [y/N] `);
     if (!/^y(es)?$/i.test(a)) throw new CliError("aborted");
   }
@@ -1142,7 +1145,8 @@ export async function cmdPromote({ flags }: Args): Promise<void> {
     `/v1/apps/${encodeURIComponent(name)}/promote`, { from, deployId: src.currentDeployId },
   );
   out(flags, () => {
-    console.log(`${color.green("✔")} promoted ${color.bold(r.deploy.id)} from ${from} to production${r.deploy.tag ? ` as ${color.bold(r.deploy.tag)}` : ""}`);
+    if (!r.promoted) console.log(`${name}: production already serves ${r.deploy.id}${r.deploy.tag ? ` (${r.deploy.tag})` : ""}`);
+    else console.log(`${color.green("✔")} promoted ${color.bold(r.deploy.id)} from ${from} to production${r.deploy.tag ? ` as ${color.bold(r.deploy.tag)}` : ""}`);
     console.log(`  ${color.cyan(r.app.url)}`);
     if (r.deploy.warning) console.log(color.yellow(`  ${r.deploy.warning}`));
   }, r);
