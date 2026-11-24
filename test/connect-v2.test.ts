@@ -195,6 +195,7 @@ test("harness restart: the folder's project comes back, announced; nothing runs 
     const ack = /confirm_project\("([0-9a-f]+)"\)/.exec(ra.text)![1];
     assert.equal((await h.text(h.call("confirm_project", { ack: "nope" }))).error, true);
     assert.match((await h.text(h.call("confirm_project", { ack }))).text, /Confirmed/);
+    await until(() => relay.frames.some((f) => f.type === "confirm" && f.handle === "inst:p1")); // the relay pins it too
     assert.deepEqual(await h.text(h.call("read_file", { path: "x" })), { text: "ran", error: false });
     const sent = relay.frames.find((f) => f.type === "tool_call")!;
     assert.equal(sent.handle, "inst:p1");
@@ -295,6 +296,7 @@ test("project tools: list with hints, switch waits for the click, a closed pinne
     assert.match(listed.text, /inst:p1: Demo/);
     assert.match(listed.text, /inst:p2: Other \(app other\) \[matches this folder\]/);
     assert.match((await h.text(h.call("use_project", { handle: "inst:p1" }))).text, /Connected to project "Demo"/);
+    assert.equal(relay.frames.find((f) => f.type === "bind" && f.handle === "inst:p1")!.confirm, true); // its explicit choice
     assert.equal(store.pin(cwd)?.handle, "inst:p1");
     assert.equal((await h.text(h.call("read_file"))).text, "ran in inst:p1");
     // A switch: pending until the click; work continues on p1.

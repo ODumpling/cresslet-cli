@@ -324,7 +324,7 @@ function createAgentLink(o: LinkOptions) {
       sendWs({
         type: "hello", role: "agent", token: startToken, agent: o.agentName(), instanceId,
         credentials: creds.map((c) => ({ id: c.id, secret: c.secret })),
-        ...(pin ? { bind: pin.handle, quiet: true } : {}),
+        ...(pin ? { bind: pin.handle, quiet: true, ...(pin.confirmed ? { confirmed: true } : {}) } : {}),
       });
     });
     sock.on("ping", () => {
@@ -475,7 +475,7 @@ function createAgentLink(o: LinkOptions) {
   }
 
   /** Asks to bind (or switch) to `handle`; resolves with the relay's answer (bound, bind_error, switch_pending). */
-  function askBind(handle: string): Promise<Msg> {
+  function askBind(handle: string, confirm = false): Promise<Msg> {
     if (binding?.handle === handle && !pendingSwitch) return Promise.resolve({ type: "bound", ...binding });
     return new Promise((resolve) => {
       const list = bindWaiters.get(handle) ?? [];
@@ -492,7 +492,7 @@ function createAgentLink(o: LinkOptions) {
       }, 10_000);
       t.unref();
       list.push(done);
-      if (!sendWs({ type: "bind", handle })) done({ type: "bind_error", code: "disconnected", message: "Not connected to Cresslet Studio: retry in a moment." });
+      if (!sendWs({ type: "bind", handle, ...(confirm ? { confirm: true } : {}) })) done({ type: "bind_error", code: "disconnected", message: "Not connected to Cresslet Studio: retry in a moment." });
     });
   }
 
@@ -583,6 +583,7 @@ function createAgentLink(o: LinkOptions) {
       if (pin && !pin.confirmed && pin.ack && args.ack === pin.ack) {
         pin.confirmed = true;
         savePin();
+        sendWs({ type: "confirm", handle: pin.handle }); // moving away from it needs the user's click from now on
         return { text: `Confirmed: working on project "${pin.projectName}". Retry your tool calls.` };
       }
       if (pin?.confirmed) return { text: `Already working on project "${pin.projectName}".` };
@@ -592,13 +593,14 @@ function createAgentLink(o: LinkOptions) {
     const handle = typeof args.handle === "string" ? args.handle : "";
     if (!handle) return { error: true, text: "use_project needs a handle from list_projects." };
     if (binding && binding.handle === handle) {
-      if (pendingSwitch) await askBind(handle); // withdraws the pending switch
+      if (pendingSwitch) await askBind(handle, true); // withdraws the pending switch
+      else if (!pin?.confirmed) sendWs({ type: "confirm", handle }); // its own explicit choice now
       pin = { handle, credentialId: binding.credentialId, projectName: binding.projectName, confirmed: true };
       savePin();
       return { text: `Working on project "${binding.projectName}".` };
     }
     const current = binding;
-    const r = await askBind(handle);
+    const r = await askBind(handle, true);
     if (r.type === "bound") {
       pin = { handle, credentialId: String(r.credentialId ?? ""), projectName: String(r.projectName ?? "project"), confirmed: true };
       savePin();
