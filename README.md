@@ -88,16 +88,19 @@ export default defineConfig({ plugins: [cresslet(), tanstackStart(), viteReact()
 | `artifact ls \| show <a> \| set <a> [--visibility v] [--keep d] [--title t] \| open <a> \| rm <a>` | manage artifacts (`<a>` = name or URL). `open` signs you in to a private one. `artifact upload <file\|dir> [--name n]` always makes a new one; `artifact update <a> <file\|dir>` replaces one's files (same link, retention clock restarts). `page …` (their old name) works too |
 | `config [list] \| get api \| set api <url> \| unset api` | CLI settings in `~/.config/cresslet/config.json`. `list` shows the server in use and where it comes from (`--api` > `CRESSLET_API` > project link > config > default) |
 | `settings [--artifact-visibility v] [--artifact-keep d\|forever] [--reset]` | your defaults for new artifacts (`--reset`: the server's; `--page-*` works too) |
-| `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `login` / `logout` / `whoami` work too |
-| `connect [--agent <name>] [--eager]` | stdio MCP server that bridges a desktop coding agent (Claude Code, Codex, T3 Code) to an open Cresslet Studio project tab. Requires `cresslet login`. Prints a short pairing code to stderr (and returns it if a tool is called before pairing); enter the code in the Studio project's **Connect agent** panel and click **Allow** |
+| `auth login [--token t] [--no-browser]`, `auth logout`, `auth status`, `claim`, `apps` | accounts. `auth login` opens the studio to approve the CLI (older servers: GitHub device code); `--token` = token from studio Settings. `logout` revokes the login's remembered Live Link agents (and its token, if `login` created it; a `--token` one stays valid; `CRESSLET_TOKEN` is never touched). `login` / `logout` / `whoami` work too |
+| `connect [--agent <name>] [--eager]` | stdio MCP server that bridges a desktop coding agent (Claude Code, Codex, T3 Code, Cursor, VS Code) to an open Cresslet Studio project tab. Requires `cresslet login`. Prints a short pairing code to stderr (and returns it if a tool is called before pairing); enter the code in the Studio project's **Connect agent** panel, tick **Remember this agent**, and click **Allow**: it reconnects without a code from then on. Talks only to the server you logged in to (`--api`, `CRESSLET_API`, config), never one a project's `.cresslet/app.json` names |
 
 ### Live Link (`cresslet connect`)
 
 Register `cresslet connect` as a stdio MCP server in your desktop agent (for example, `claude mcp add cresslet -- npx cresslet connect`):
 
 - Exposes the same 7 Studio builder tools (`list_files`, `read_file`, `write_file`, `edit_file`, `delete_file`, `run_command`, `read_dev_log`) plus `commit_change(title)` to mark a turn boundary (and commit a stack change on GitHub-linked apps).
-- Pairs with one open Studio project tab belonging to your own account via a short one-time code (`XXXX-XXXX`).
+- Pairs with one open Studio project tab belonging to your own account via a short one-time code (`XXXX-XXXX`). With **Remember this agent** ticked, it keeps a credential (`~/.config/cresslet/agents/<id>.json`, 0600; reconnecting needs it *and* the login token) and reconnects on its own after restarts, drops, tab reloads and server restarts, to the projects you allowed (more from a project's tab: **Connect agent → Allow**).
+- A remembered agent also gets `list_projects`, `use_project(handle)` (switching away from the current project needs your click in the target tab) and `confirm_project(ack)`: a project it picked by itself (the one this folder last used, or the only one open) is announced before anything runs.
+- **Disconnect** in the tab pauses the project until **Resume**; **Forget agent** (or Studio Settings → Connected agents) revokes it.
 - Deploys started via `run_command` still require clicking **Approve deploy** in the Studio tab.
+- Per-harness setup (Claude Code, Codex, T3 Code, Cursor, VS Code; absolute `node` + script paths for GUI apps, and Windows): [docs/live-link.md](https://github.com/ODumpling/cresslet/blob/main/docs/live-link.md).
 
 Global: `--api <url>`, `--json`, `--app <name>`. Env: `CRESSLET_API`, `CRESSLET_TOKEN`, `CRESSLET_DEPLOY_KEY` (CI).
 
