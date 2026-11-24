@@ -1142,7 +1142,8 @@ export async function cmdPromote({ flags }: Args): Promise<void> {
     if (!/^y(es)?$/i.test(a)) throw new CliError("aborted");
   }
   const r = await api.post<{ app: { url: string; currentDeployId: string }; deploy: { id: string; tag?: string; warning?: string }; promoted: boolean }>(
-    `/v1/apps/${encodeURIComponent(name)}/promote`, { from, deployId: src.currentDeployId },
+    // What production served when asked: a deploy to it since is never replaced unasked (the server answers 409).
+    `/v1/apps/${encodeURIComponent(name)}/promote`, { from, deployId: src.currentDeployId, expectProduction: prod?.currentDeployId ?? null },
   );
   out(flags, () => {
     if (!r.promoted) console.log(`${name}: production already serves ${r.deploy.id}${r.deploy.tag ? ` (${r.deploy.tag})` : ""}`);

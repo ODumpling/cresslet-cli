@@ -1504,7 +1504,7 @@ test("environments: deploy --env staging (its own route, never /v1/deploys), pro
 
     // Promote sends the deploy staging serves (the server refuses a stale one).
     const pr = await cli(dir, api, "promote", "-y");
-    assert.deepEqual(api.calls.at(-1).body, { from: "staging", deployId: "dep_s1" });
+    assert.deepEqual(api.calls.at(-1).body, { from: "staging", deployId: "dep_s1", expectProduction: "dep_p1" });
     assert.match(pr.stdout, /promoted dep_s1 from staging to production as v3/);
     staging = null;
     await assert.rejects(cli(dir, api, "promote", "-y"), (e: ExecError) => /nothing is deployed to a's staging/.test(e.stderr));
