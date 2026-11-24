@@ -197,7 +197,9 @@ export async function cmdBuild({ flags }: Args): Promise<void> {
  * App: a project (cresslet.json), a linked app, or any other static folder (public, as before).
  */
 export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
+  const env = envFrom(flags);
   const art = artifactTarget(target, flags);
+  if (art && env) throw new CliError("--env is for apps: an artifact has no environments");
   if (art) return deployArtifact(art, flags);
   const nameFlag = textFlag(flags, "name"); // a bare --name fails before any build
   // e.g. `deploy dist` in a project: its build output isn't an app of its own (a linked one, e.g. pulled there, is).
@@ -252,12 +254,29 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   const server = serverFile ? fs.readFileSync(serverFile, "utf8") : null;
   const bytes = fileBytes + (server?.length ?? 0);
   const name = nameFlag ?? project.link.name ?? (project.config.name || undefined);
+  if (env && !name) throw new CliError(`deploy the app to production once first, then --env ${env}`, "cresslet deploy");
   // A static folder (no cresslet.json) has no project source to keep.
   const sources = flags["no-source"] || !fs.existsSync(path.join(project.root, "cresslet.json"))
     ? undefined
     : readSources(project.root, { exclude: [staticDir, configDir()], used: { files: files.length, bytes: fileBytes }, warn });
 
-  if (!flags.json) process.stderr.write(color.dim(`deploying ${files.length} files (${formatBytes(bytes)}) to ${api.base}…\n`));
+  if (!flags.json) process.stderr.write(color.dim(`deploying ${files.length} files (${formatBytes(bytes)}) to ${env ? `${name}'s ${env} on ` : ""}${api.base}…\n`));
+  if (env) {
+    // Its own route: a server without environments answers 404 (never a deploy to production).
+    const r = await api.post<{ app: { name: string }; environment: { name: string; url: string }; deploy: { id: string; warning?: string } }>(
+      `/v1/apps/${encodeURIComponent(name!)}/envs/${encodeURIComponent(env)}/deploys`,
+      { files, server, config: { routes: project.config.routes, crons: project.config.crons }, source: "cli", sources, ...(git ? { git } : {}) },
+    ).catch((e: CliError) => {
+      if (e.code === "not_found" && /no such endpoint/.test(e.message)) throw new CliError(`${api.base} doesn't have environments (update the server)`);
+      throw e;
+    });
+    return out(flags, () => {
+      console.log(`${color.green("✔")} deployed ${color.bold(r.app.name)} to ${color.bold(r.environment.name)} ${color.dim(`(${r.deploy.id}, ${Math.round(performance.now() - t0)}ms)`)}`);
+      console.log(`  ${color.cyan(r.environment.url)} ${color.dim("(private: you, its collaborators and organization)")}`);
+      if (r.deploy.warning) console.log(color.yellow(`  ${r.deploy.warning}`));
+      console.log(color.dim(`  to production: cresslet promote${r.environment.name === "staging" ? "" : ` --from ${r.environment.name}`}`));
+    }, { kind: "app", env: r.environment.name, ...r });
+  }
   const body = {
     app: name,
     files,
@@ -871,6 +890,7 @@ export async function cmdApps({ flags }: Args): Promise<void> {
 export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !target && !flags.app });
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
+  const env = envFrom(flags, target);
   const api = appClient(flags, project, name);
   const r = await api.get<{
     app: { name: string; url: string; claimed: boolean; expiresAt: string; config: { routes?: string[]; server?: unknown } };
@@ -878,15 +898,20 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
     secrets: string[];
     deploys: { current: boolean; id: string; createdAt: string; files: number; bytes: number; server: unknown; source: string; git?: { sha: string; branch: string | null } | null }[];
     repo?: { fullName: string } | null;
-  }>(`/v1/apps/${encodeURIComponent(name)}`);
+    environments?: { name: string; url: string; currentDeployId: string | null }[];
+  }>(withEnv(`/v1/apps/${encodeURIComponent(name)}`, env));
   out(flags, () => {
     const a = r.app;
-    console.log(`${color.bold(a.name)}  ${color.cyan(a.url)}`);
+    const here = env ? r.environments?.find((e) => e.name === env) : undefined;
+    console.log(`${color.bold(a.name)}${env ? ` (${env})` : ""}  ${color.cyan(here?.url ?? a.url)}`);
     console.log(`  claimed: ${a.claimed ? "yes" : `no (expires ${a.expiresAt})`}`);
     console.log(`  routes:  ${(a.config.routes ?? []).join(", ")}${a.config.server ? "" : " (no server)"}`);
     console.log(`  runtime: ${r.runtime.running ? `running (pid ${r.runtime.pid})` : "idle"}`);
     console.log(`  secrets: ${r.secrets.length ? r.secrets.join(", ") : "none"}`);
     if (r.repo) console.log(`  repo:    ${r.repo.fullName}`);
+    if ((r.environments?.length ?? 0) > 1) {
+      console.log(`  envs:    ${r.environments!.map((e) => `${e.name}${e.currentDeployId ? ` (${e.currentDeployId})` : ""}`).join(", ")}`);
+    }
     console.log("  deploys:");
     for (const d of r.deploys) {
       const g = d.git ? `  ${d.git.branch ?? "commit"} @ ${d.git.sha.slice(0, 7)}` : "";
@@ -897,18 +922,35 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
 
 function nameFrom(target: string): string {
   try {
-    return new URL(target).hostname.split(".")[0];
+    // `https://shop--staging.<domain>`: the app (its environment comes from envFrom).
+    return new URL(target).hostname.split(".")[0].split("--")[0];
   } catch {
     return target;
   }
 }
 
+/** The environment a command acts on: `--env staging`, or a staging URL; undefined: production. */
+function envFrom(flags: Flags, target?: string): string | undefined {
+  const flag = textFlag(flags, "env");
+  if (flag !== undefined) return flag === "production" ? undefined : flag;
+  try {
+    const label = target ? new URL(target).hostname.split(".")[0] : "";
+    const i = label.indexOf("--");
+    return i > 0 ? label.slice(i + 2) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/** `path` of one of the app's environments (`?env=`; production: as is). */
+const withEnv = (p: string, env: string | undefined) => (env ? `${p}${p.includes("?") ? "&" : "?"}env=${encodeURIComponent(env)}` : p);
+
 export async function cmdLogs({ _: [target], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !target && !flags.app });
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
+  const env = envFrom(flags, target);
   const api = appClient(flags, project, name);
   const follow = !!(flags.follow ?? flags.f);
-  const res = await api.get(`/v1/apps/${encodeURIComponent(name)}/logs?n=${Number(flags.n ?? 100)}${follow ? "&follow=1" : ""}`, { stream: true });
+  const res = await api.get(withEnv(`/v1/apps/${encodeURIComponent(name)}/logs?n=${Number(flags.n ?? 100)}${follow ? "&follow=1" : ""}`, env), { stream: true });
   const dec = new TextDecoder();
   let buf = "";
   const kindColor: Record<string, (s: unknown) => string> = { stderr: color.red, system: color.yellow, request: color.dim, stdout: (s) => s as string };
@@ -933,13 +975,14 @@ export async function cmdLogs({ _: [target], flags }: Args): Promise<void> {
 export async function cmdDb({ _: [sql], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
+  const env = envFrom(flags);
   const api = appClient(flags, project, name);
   if (sql) {
-    const r = await api.post<{ rows: unknown[] }>(`/v1/apps/${encodeURIComponent(name)}/db/query`, { sql });
+    const r = await api.post<{ rows: unknown[] }>(withEnv(`/v1/apps/${encodeURIComponent(name)}/db/query`, env), { sql });
     return out(flags, () => console.table(r.rows), r);
   }
   const r = await api.get<{ tables: Record<string, { count: number; schema: string; rows: unknown[] }> }>(
-    `/v1/apps/${encodeURIComponent(name)}/db?limit=${Number(flags.limit ?? 20)}`,
+    withEnv(`/v1/apps/${encodeURIComponent(name)}/db?limit=${Number(flags.limit ?? 20)}`, env),
   );
   out(flags, () => {
     const names = Object.keys(r.tables);
@@ -955,9 +998,15 @@ export async function cmdDb({ _: [sql], flags }: Args): Promise<void> {
 export async function cmdSecrets({ _: [sub, ...rest], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
+  // `--env staging`: its own secrets, overriding production's (which it sees too).
+  const env = envFrom(flags);
   const api = appClient(flags, project, name);
+  const at = withEnv(`/v1/apps/${encodeURIComponent(name)}/secrets`, env);
   if (!sub || sub === "list" || sub === "ls") {
-    const r = await api.get<{ keys: string[] }>(`/v1/apps/${encodeURIComponent(name)}/secrets`);
+    const r = await api.get<{ keys: string[]; secrets?: { key: string; source: string }[] }>(at);
+    if (r.secrets) {
+      return out(flags, r.secrets.length ? r.secrets.map((x) => `${x.key}${x.source === env ? "" : color.dim(` (from ${x.source})`)}`).join("\n") : "no secrets", r);
+    }
     return out(flags, r.keys.length ? r.keys.join("\n") : "no secrets", r);
   }
   if (sub === "set") {
@@ -968,13 +1017,13 @@ export async function cmdSecrets({ _: [sub, ...rest], flags }: Args): Promise<vo
       if (i < 1) throw new CliError(`expected KEY=value, got ${kv}`);
       body[kv.slice(0, i)] = kv.slice(i + 1);
     }
-    const r = await api.put(`/v1/apps/${encodeURIComponent(name)}/secrets`, body);
-    return out(flags, `${color.green("✔")} set ${Object.keys(body).join(", ")}`, r);
+    const r = await api.put(at, body);
+    return out(flags, `${color.green("✔")} set ${Object.keys(body).join(", ")}${env ? ` in ${env}` : ""}`, r);
   }
   if (sub === "unset" || sub === "rm") {
     const body = Object.fromEntries(rest.map((k) => [k, null]));
-    const r = await api.put(`/v1/apps/${encodeURIComponent(name)}/secrets`, body);
-    return out(flags, `${color.green("✔")} removed ${rest.join(", ")}`, r);
+    const r = await api.put(at, body);
+    return out(flags, `${color.green("✔")} removed ${rest.join(", ")}${env ? ` from ${env}` : ""}`, r);
   }
   throw new CliError(`unknown secrets command: ${sub}`, "use list | set KEY=value | unset KEY");
 }
@@ -1038,9 +1087,76 @@ export async function cmdEgress({ _: [sub, ...hosts], flags }: Args): Promise<vo
 export async function cmdRollback({ _: [deployId], flags }: Args): Promise<void> {
   const project = loadProject(process.cwd(), { required: !flags.app });
   const name = appName(project ?? { link: {}, config: {} }, flags);
+  const env = envFrom(flags);
   const api = appClient(flags, project, name);
-  const r = await api.post<{ app: { currentDeployId: string } }>(`/v1/apps/${encodeURIComponent(name)}/rollback`, { deployId });
-  out(flags, `${color.green("✔")} ${name} now serving ${r.app.currentDeployId}`, r);
+  const r = await api.post<{ app: { currentDeployId: string }; environment?: { currentDeployId: string } }>(
+    `/v1/apps/${encodeURIComponent(name)}/rollback`, { deployId, ...(env ? { env } : {}) },
+  );
+  out(flags, `${color.green("✔")} ${name}${env ? ` (${env})` : ""} now serving ${(env ? r.environment?.currentDeployId : null) ?? r.app.currentDeployId}`, r);
+}
+
+/**
+ * `cresslet promote [--from staging] [-y]`: production serves what staging does (the same deploy, not rebuilt). On a
+ * GitHub-linked app the server first moves the default branch to that deploy's commit (fast-forward only) and tags it.
+ */
+export async function cmdPromote({ flags }: Args): Promise<void> {
+  const project = loadProject(process.cwd(), { required: !flags.app });
+  const name = appName(project ?? { link: {}, config: {} }, flags);
+  const from = textFlag(flags, "from") ?? "staging";
+  const api = appClient(flags, project, name);
+  type Env = { name: string; url: string; currentDeployId: string | null };
+  const envs = await api.get<{ environments: Env[] }>(`/v1/apps/${encodeURIComponent(name)}/envs`).catch((e: CliError) => {
+    if (e.code === "not_found" && /no such endpoint/.test(e.message)) throw new CliError(`${api.base} doesn't have environments (update the server)`);
+    throw e;
+  });
+  const src = envs.environments.find((e) => e.name === from);
+  const prod = envs.environments.find((e) => e.name === "production");
+  if (!src?.currentDeployId) throw new CliError(`nothing is deployed to ${name}'s ${from}`, `cresslet deploy --env ${from}`);
+  if (src.currentDeployId === prod?.currentDeployId) return out(flags, `${name}: production already serves ${src.currentDeployId}`, { promoted: false, deployId: src.currentDeployId });
+  if (!flags.yes && !flags.y) {
+    const a = await ask(`promote ${src.currentDeployId} from ${from} to production (${name})? [y/N] `);
+    if (!/^y(es)?$/i.test(a)) throw new CliError("aborted");
+  }
+  const r = await api.post<{ app: { url: string; currentDeployId: string }; deploy: { id: string; tag?: string; warning?: string }; promoted: boolean }>(
+    `/v1/apps/${encodeURIComponent(name)}/promote`, { from, deployId: src.currentDeployId },
+  );
+  out(flags, () => {
+    console.log(`${color.green("✔")} promoted ${color.bold(r.deploy.id)} from ${from} to production${r.deploy.tag ? ` as ${color.bold(r.deploy.tag)}` : ""}`);
+    console.log(`  ${color.cyan(r.app.url)}`);
+    if (r.deploy.warning) console.log(color.yellow(`  ${r.deploy.warning}`));
+  }, r);
+}
+
+/** `cresslet env [ls] | seed <env> [--from production] | rm <env> [-y]`: the app's environments. */
+export async function cmdEnv({ _: [sub = "ls", env], flags }: Args): Promise<void> {
+  const project = loadProject(process.cwd(), { required: !flags.app });
+  const name = appName(project ?? { link: {}, config: {} }, flags);
+  const api = appClient(flags, project, name);
+  const base = `/v1/apps/${encodeURIComponent(name)}/envs`;
+  if (sub === "ls" || sub === "list") {
+    const r = await api.get<{ environments: { name: string; url: string; private: boolean; currentDeployId: string | null }[] }>(base);
+    return out(flags, () => {
+      for (const e of r.environments) {
+        console.log(`${color.bold(e.name.padEnd(12))} ${color.cyan(e.url)}  ${e.currentDeployId ?? color.dim("nothing deployed")}${e.private ? color.dim("  private") : ""}`);
+      }
+      if (r.environments.length === 1) console.log(color.dim("  staging: cresslet deploy --env staging"));
+    }, r);
+  }
+  if (!env || env === "production") throw new CliError(`usage: cresslet env ${sub} <env>`, "e.g. cresslet env " + sub + " staging");
+  if (sub === "seed" || sub === "clone") {
+    const from = textFlag(flags, "from") ?? "production";
+    const r = await api.post<{ bytes: number }>(`${base}/${encodeURIComponent(env)}/seed`, { from });
+    return out(flags, `${color.green("✔")} ${env}'s database replaced by a snapshot of ${from}'s (${formatBytes(r.bytes)}; files not copied)`, r);
+  }
+  if (sub === "rm" || sub === "delete") {
+    if (!flags.yes && !flags.y) {
+      const a = await ask(`delete ${name}'s ${env} (its data and deploys)? type ${env} to confirm: `);
+      if (a !== env) throw new CliError("aborted");
+    }
+    const r = await api.del(`${base}/${encodeURIComponent(env)}`);
+    return out(flags, `${color.green("✔")} deleted ${name}'s ${env}`, r);
+  }
+  throw new CliError(`unknown env command: ${sub}`, "use ls | seed <env> | rm <env>");
 }
 
 export async function cmdDelete({ flags }: Args): Promise<void> {

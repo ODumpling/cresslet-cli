@@ -56,6 +56,8 @@ export interface AppInfo {
   name: string;
   url: string;
   deployId: string;
+  /** The environment serving this request: "production", or "staging" (on `<app>--staging.<domain>`). */
+  env?: string;
 }
 
 /** The `env` argument of fetch(req, env, ctx) and scheduled(event, env, ctx). */
@@ -503,6 +505,10 @@ export const app: Readonly<AppInfo> & { toJSON(): AppInfo } = Object.freeze({
   },
   get deployId() {
     return env("app").app.deployId;
+  },
+  /** "production", or the environment (`staging`); older servers and `cresslet dev`: "production". */
+  get env() {
+    return env("app").app.env ?? "production";
   },
   toJSON(): AppInfo {
     return { ...env("app").app };

@@ -14,16 +14,18 @@ const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> 
   templates: [c.cmdTemplates, "templates", "list templates"],
   dev: [c.cmdDev, "dev [--port 3000]", "run locally with live reload"],
   build: [c.cmdBuild, "build", "production build (dist/ + .cresslet/build/server.js)"],
-  deploy: [c.cmdDeploy, "deploy [file|dir] [--artifact] [--name n]", "deploy an app, or a file or folder as an artifact"],
+  deploy: [c.cmdDeploy, "deploy [file|dir] [--artifact] [--name n] [--env staging]", "deploy an app (or to its staging), or a file or folder as an artifact"],
+  promote: [c.cmdPromote, "promote [--from staging] [-y]", "production serves staging's deploy (linked repo: merged + tagged)"],
+  env: [c.cmdEnv, "env [ls|seed <env>|rm <env>]", "the app's environments: staging's data from production's, delete"],
   pull: [c.cmdPull, "pull [app|url] [--dir d] [--deploy id]", "download a deploy's source"],
-  logs: [c.cmdLogs, "logs [app|url] [-f] [-n 100]", "show server + request logs"],
-  db: [c.cmdDb, "db [sql]", "inspect the deployed database (read-only)"],
+  logs: [c.cmdLogs, "logs [app|url] [-f] [-n 100] [--env staging]", "show server + request logs"],
+  db: [c.cmdDb, "db [sql] [--env staging]", "inspect the deployed database (read-only)"],
   domains: [c.cmdDomains, "domains [add|verify|rm <domain>]", "custom domains (claimed apps)"],
   egress: [c.cmdEgress, "egress [allow <host…>|clear]", "outbound fetch allowlist (claimed apps)"],
-  secrets: [c.cmdSecrets, "secrets [list|set K=V|unset K]", "manage server secrets (claimed apps)"],
-  inspect: [c.cmdInspect, "inspect [app|url]", "show app status and deploys"],
+  secrets: [c.cmdSecrets, "secrets [list|set K=V|unset K] [--env staging]", "manage server secrets (staging: overrides)"],
+  inspect: [c.cmdInspect, "inspect [app|url] [--env staging]", "show app status and deploys"],
   git: [c.cmdGit, "git [status|connect <owner/repo> [--push]|sync [-m msg]]", "the app's GitHub repository (connect GitHub in the studio first)"],
-  rollback: [c.cmdRollback, "rollback [deployId]", "serve a previous deploy"],
+  rollback: [c.cmdRollback, "rollback [deployId] [--env staging]", "serve a previous deploy"],
   open: [c.cmdOpen, "open", "open the deployed app"],
   delete: [c.cmdDelete, "delete [-y]", "delete the app and its data"],
   login: [c.cmdLogin, "login [--token t] [--no-browser]", "log in in the browser, or with a token from studio Settings"],
@@ -39,7 +41,7 @@ const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> 
 
 const DEPLOY_HELP = `${color.bold("deploy")} picks what to publish:
   app       a project (cresslet.json), or any other folder: public, with rollback; --dir <out> [--server <bundle.js>]
-            deploys prebuilt output
+            deploys prebuilt output; --env staging deploys to its private staging (cresslet promote takes it to production)
   artifact  a single .html file, or a folder with --artifact: who can open it (--visibility private|link|public,
             default private unless changed in \`cresslet settings\`), how long it's kept (--keep <days>|forever), --title t
   Deploying the same file or folder again updates the same URL. --name <address> picks the address.`;
