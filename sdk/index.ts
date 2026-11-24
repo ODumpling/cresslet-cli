@@ -28,6 +28,8 @@ export interface BatchResult<T = Row> extends RunResult {
 export interface Statement {
   sql: string;
   params?: SQLValue[];
+  /** Its rows as arrays of values in column order (as db.raw), not objects (runtime contract 2). */
+  raw?: boolean;
 }
 
 /** The database as the `env` argument has it: SQL strings with `?` parameters. */
@@ -38,6 +40,8 @@ export interface EnvDatabase {
   exec(sql: string): Promise<void>;
   /** Runs the statements in one transaction (all or none), with no other statement in between. */
   batch(statements: Statement[]): Promise<BatchResult[]>;
+  /** Rows as arrays of values in column order: columns with the same name (a join's `id`s) each keep theirs. Contract 2. */
+  raw?(sql: string, ...params: SQLValue[]): Promise<unknown[][]>;
 }
 
 export interface Files {
@@ -108,12 +112,18 @@ export interface Database {
   first<T = Row>(sql: string, ...params: SQLValue[]): Promise<T | null>;
   run(query: Query<any>): Promise<RunResult>;
   run(sql: string, ...params: SQLValue[]): Promise<RunResult>;
+  /**
+   * The rows as arrays of values in column order, not objects: columns with the same name (`a.id` and `b.id` in a
+   * join) each keep their value. What query builders (cresslet/drizzle) use.
+   */
+  raw(query: Query<any>): Promise<unknown[][]>;
+  raw(sql: string, ...params: SQLValue[]): Promise<unknown[][]>;
   /** Several statements, no parameters (DDL, schema setup). */
   exec(sql: string): Promise<void>;
   /**
    * Runs the statements in one transaction: all of them or (if one fails) none, with no other request's statement in
    * between. One result per statement, in order. Each item is a single statement (SQL after its first statement isn't run); no BEGIN/COMMIT/
-   * SAVEPOINT, PRAGMA, ATTACH or DETACH inside.
+   * SAVEPOINT, PRAGMA, ATTACH or DETACH inside. A `{ sql, params, raw: true }` statement's rows are arrays (as db.raw).
    */
   batch(statements: (Query<any> | string | Statement)[]): Promise<BatchResult[]>;
 }
@@ -173,10 +183,13 @@ interface Runtime {
 type ActiveRuntime = Runtime & { env: Env };
 
 /** This SDK's version. */
-const VERSION: string = "0.5.0";
+const VERSION: string = "0.6.0";
 const KEY = Symbol.for("cresslet.runtime");
-/** Runtime contract each SDK feature needs. 1: env published for the SDK, db.batch, paramStyle. */
-const FEATURES: Record<string, number> = { db: 1, "db.batch": 1, kv: 1, files: 1, secrets: 1, app: 1 };
+/**
+ * Runtime contract each SDK feature needs. 1: env published for the SDK, db.batch, paramStyle. 2: env.db.raw and
+ * `raw` batch statements (rows as arrays).
+ */
+const FEATURES: Record<string, number> = { db: 1, "db.batch": 1, "db.raw": 2, kv: 1, files: 1, secrets: 1, app: 1 };
 /** The runtime contract this SDK needs for all of its features. */
 const CONTRACT: number = Math.max(...Object.values(FEATURES));
 
@@ -306,15 +319,23 @@ export const db: Database = Object.freeze({
     const [rt, s] = statement("db.run", q, params);
     return rt.env.db.run(s.sql, ...s.params);
   },
+  async raw(q: Query<unknown> | string, ...params: SQLValue[]): Promise<unknown[][]> {
+    const [rt, s] = statement("db.raw", q, params);
+    if (typeof rt.env.db.raw !== "function") {
+      throw new CressletError(`cresslet: db.raw isn't supported by this runtime (${rt.runtime ?? "unknown"}); update it`);
+    }
+    return rt.env.db.raw(s.sql, ...s.params);
+  },
   async exec(q: string): Promise<void> {
     if (typeof q !== "string") throw new CressletError("cresslet: db.exec takes a SQL string (no parameters)");
     return env("db.exec").db.exec(q);
   },
   /** Runs the statements in one transaction (all or none), with no other statement in between. */
   async batch(statements: (Query<unknown> | string | Statement)[]): Promise<BatchResult[]> {
-    const rt = runtime("db.batch");
     if (!Array.isArray(statements)) throw new CressletError("cresslet: db.batch takes an array of statements");
-    const list = statements.map((q: unknown, i) => {
+    const raw = statements.some((q) => !!q && typeof q === "object" && !isQuery(q) && (q as Statement).raw === true);
+    const rt = runtime(raw ? "db.raw" : "db.batch");
+    const list = statements.map((q: unknown, i): Statement => {
       if (isQuery(q)) return q.compile(rt.paramStyle ?? "?");
       if (typeof q === "string") return { sql: q, params: [] };
       const st = q as Partial<Statement> | null;
@@ -322,7 +343,7 @@ export const db: Database = Object.freeze({
         if (st.params !== undefined && !Array.isArray(st.params)) {
           throw new CressletError(`cresslet: db.batch statement ${i + 1}: params must be an array`);
         }
-        return { sql: st.sql, params: [...(st.params ?? [])] };
+        return st.raw === true ? { sql: st.sql, params: [...(st.params ?? [])], raw: true } : { sql: st.sql, params: [...(st.params ?? [])] };
       }
       throw new CressletError(`cresslet: db.batch statement ${i + 1} is not a db.sql query, SQL string or { sql, params }`);
     });

@@ -182,6 +182,7 @@ export default { get fetch() { const got = name(); return () => Response.json({ 
 
 test("package exports the SDK (types too); its version is the package's", () => {
   assert.deepEqual(PKG.exports["."], { types: "./dist/sdk/index.d.ts", default: "./dist/sdk/index.js" });
+  assert.deepEqual(PKG.exports["./drizzle"], { types: "./dist/sdk/drizzle.d.ts", default: "./dist/sdk/drizzle.js" });
   assert.ok(PKG.files.includes("dist/sdk"));
   assert.equal(sdk.VERSION, PKG.version);
   assert.deepEqual(Object.keys(sdk).sort(), ["CONTRACT", "CressletError", "VERSION", "app", "db", "files", "kv", "secrets"]);
@@ -201,6 +202,15 @@ test("without a runtime, in module scope, or on an older runtime: errors that sa
   await withRuntime({ contract: 1, runtime: "x", env: null }, async () => {
     await assert.rejects(sdk.db.query("SELECT 1"), /module was loading.*not at module top level/s);
     assert.throws(() => sdk.secrets.STRIPE, /only once a handler runs/);
+  });
+  // db.raw and raw batch statements need contract 2 (a contract 1 runtime would answer objects)
+  await withRuntime({ contract: 1, runtime: "one", env: { db: { batch: async () => [] } } }, async () => {
+    await assert.rejects(sdk.db.raw("SELECT 1"), /db\.raw` needs Cresslet runtime contract 2.*\(one\) provides contract 1/);
+    await assert.rejects(sdk.db.batch([{ sql: "SELECT 1", raw: true }]), /db\.raw` needs Cresslet runtime contract 2/);
+    assert.deepEqual(await sdk.db.batch([{ sql: "SELECT 1" }]), []);
+  });
+  await withRuntime({ contract: 2, runtime: "x", env: { db: {} } }, async () => {
+    await assert.rejects(sdk.db.raw("SELECT 1"), /db\.raw isn't supported by this runtime \(x\)/);
   });
   // a runtime claiming the contract without env.db.batch
   await withRuntime({ contract: 1, runtime: "x", env: { db: {} } }, async () => {

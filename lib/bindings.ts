@@ -53,17 +53,17 @@ export function batch(db: Sqlite, statements: unknown): BatchResult[] {
     if (typeof s?.sql !== "string") throw new TypeError(`batch statement ${i + 1}: sql required`);
     if (s.params !== undefined && !Array.isArray(s.params)) throw new TypeError(`batch statement ${i + 1}: params must be an array`);
     if (notInBatch(s.sql)) throw new TypeError(`batch statement ${i + 1}: transaction control, PRAGMA, ATTACH and DETACH aren't allowed in a batch (it is one transaction; the others aren't rolled back with it)`);
-    return { sql: s.sql, params: (s.params ?? []) as SQLValue[] }; // the values are SQLite's to accept or refuse
+    return { sql: s.sql, params: (s.params ?? []) as SQLValue[], raw: (s as { raw?: unknown }).raw === true }; // the values are SQLite's to accept or refuse
   });
   const total = db.prepare("SELECT total_changes() n");
   const counts = db.prepare("SELECT changes() changes, last_insert_rowid() id");
   counts.setReadBigInts(true); // a rowid past 2^53 would throw otherwise
   db.exec("SAVEPOINT cresslet_batch");
   try {
-    const out = list.map(({ sql, params }, i) => {
+    const out = list.map(({ sql, params, raw }, i) => {
       try {
         const before = total.get()!.n; // (one row, always)
-        const rows: Row[] = db.prepare(sql).all(...params); // runs any statement; [] when it returns no rows
+        const rows = prepare(db, sql, raw).all(...params) as Row[]; // runs any statement; [] when it returns no rows (raw: arrays)
         const c = counts.get()!;
         return { rows, changes: total.get()!.n === before ? 0 : num(c.changes), lastInsertRowid: num(c.id) };
       } catch (e) {
@@ -90,9 +90,25 @@ interface FileRow {
   updated_at: number;
 }
 
-/** Where the `cresslet` SDK finds the env (sdk/index.js). Contract 1: env published, db.batch, "?" placeholders. */
+/**
+ * `sql` prepared; `raw`: its rows as arrays of values in column order (env.db.raw, `raw` batch statements), so columns
+ * with the same name each keep theirs. Same in server/bindings.ts and studio/server-worker.ts (cresslet repo).
+ */
+function prepare(db: Sqlite, sql: string, raw = false) {
+  const stmt = db.prepare(sql);
+  if (raw) {
+    if (typeof stmt.setReturnArrays !== "function") throw new Error("db.raw needs Node 22.16 or later (node:sqlite setReturnArrays)");
+    stmt.setReturnArrays(true);
+  }
+  return stmt;
+}
+
+/**
+ * Where the `cresslet` SDK finds the env (sdk/index.js). Contract 1: env published, db.batch, "?" placeholders.
+ * 2: env.db.raw, `raw` batch statements.
+ */
 export const RUNTIME_KEY = Symbol.for("cresslet.runtime");
-export const RUNTIME_CONTRACT = 1;
+export const RUNTIME_CONTRACT = 2;
 /** What a runtime publishes there (sdk/index.ts reads it). */
 export interface PublishedRuntime {
   contract: number;
@@ -122,6 +138,7 @@ export async function createEnv({ dataDir, secrets = {}, app }: { dataDir: strin
         const r = db.prepare(sql).run(...p);
         return { changes: num(r.changes), lastInsertRowid: num(r.lastInsertRowid) };
       },
+      raw: async (sql: string, ...p: SQLValue[]) => prepare(db, sql, true).all(...p) as unknown as unknown[][],
       exec: async (sql: string) => void db.exec(sql),
       batch: async (statements: unknown) => batch(db, statements),
     },
