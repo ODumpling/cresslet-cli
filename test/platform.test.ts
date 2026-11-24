@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { loadProject } from "../lib/util.ts";
+import { agentStore } from "../lib/agents.ts";
 import { dev } from "../lib/dev.ts";
 
 // Runs compiled, from dist/test/ (npm test): the built CLI is dist/bin/cresslet.js, the fixture in the repo's test/.
@@ -1413,6 +1414,55 @@ test("git sync / connect --push: only what git would commit, never an empty or p
     await gitIn(dir, "add", "-A");
     const built = await cli(dir, api, "git", "connect", "octo/shop", "--push").catch((e: ExecError) => e);
     assert.match((built as ExecError).stderr, /out\/ \(build output\) is committed/);
+  } finally {
+    await api.close();
+  }
+});
+
+test("logout: revokes the login's remembered agents (and a browser-login token); an imported token stays; CRESSLET_TOKEN untouched", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-cli-"));
+  const cfgDir = path.join(dir, ".cfg-test");
+  const { CRESSLET_TOKEN: _, ...env } = process.env;
+  const cmd = (extra: Record<string, string>, ...args: string[]) => run(process.execPath, [CLI, ...args, "--api", api.url], {
+    cwd: dir, env: { ...env, CRESSLET_CONFIG_DIR: cfgDir, NO_COLOR: "1", ...extra },
+  });
+  const account = { id: "acct_1", email: "o@x.dev", github: null };
+  let polls = 0;
+  const api = await fakeApi({
+    "GET /v1": () => ({ auth: { cli: true } }),
+    "POST /v1/auth/cli": () => ({ deviceCode: "dc", userCode: "BCDF-GHJK", verificationUri: "http://studio.test/cli", expiresIn: 60, interval: 0.01 }),
+    "POST /v1/auth/cli/token": () => (++polls % 2 ? { status: "pending" } : { status: "complete", account, token: "clv_acct_minted" }),
+    "GET /v1/me": () => ({ account }),
+    "POST /v1/me/agents/revoke": () => ({ revoked: ["agt_1"] }),
+    "POST /v1/me/token/revoke": () => ({ revoked: "tok_1" }),
+  });
+  const remembered = (token: string) => {
+    const store = agentStore({ dir: cfgDir, api: api.url, token });
+    store.save({ id: "agt_1", secret: "s".repeat(43), label: "Claude Code" });
+    return store;
+  };
+  try {
+    // Browser login: logout revokes its agents and the token, with that token.
+    await cmd({}, "login", "--no-browser");
+    let store = remembered("clv_acct_minted");
+    const out1 = await cmd({ CRESSLET_TOKEN: "clv_acct_env" }, "logout");
+    assert.match(out1.stdout, /token revoked/);
+    assert.match(out1.stdout, /CRESSLET_TOKEN is set: logout doesn't touch it/);
+    const posts = api.calls.filter((c) => c.method === "POST" && c.path.startsWith("/v1/me/"));
+    assert.deepEqual(posts.map((c) => [c.path, c.headers.authorization]), [
+      ["/v1/me/agents/revoke", "Bearer clv_acct_minted"],
+      ["/v1/me/token/revoke", "Bearer clv_acct_minted"],
+    ]);
+    assert.deepEqual(store.list(), []);
+
+    // An imported token: its agents go, the token stays valid.
+    await cmd({}, "login", "--token=clv_acct_pasted");
+    store = remembered("clv_acct_pasted");
+    const n = api.calls.length;
+    const out2 = await cmd({}, "logout");
+    assert.doesNotMatch(out2.stdout, /token revoked/);
+    assert.deepEqual(api.calls.slice(n).map((c) => c.path), ["/v1/me/agents/revoke"]);
+    assert.deepEqual(store.list(), []);
   } finally {
     await api.close();
   }
