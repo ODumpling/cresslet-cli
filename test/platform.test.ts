@@ -1532,13 +1532,27 @@ test("environments: deploy --env staging (its own route, never /v1/deploys), pro
   }
 });
 
-test("environments: a server without them refuses the staging deploy (404), never deploying to production", async () => {
+test("environments: a server without them refuses every --env command; nothing reaches production", async () => {
   const dir = copyFixture();
   fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
-  const api = await fakeApi({ "POST /v1/deploys": () => ({ $status: 201 }) });
+  const p = "/v1/apps/a";
+  // An older server: no environments routes ("no such endpoint"), and its other routes ignore `env`.
+  const old = () => ({ $status: 404, error: "not_found", message: "no such endpoint" });
+  const api = await fakeApi({
+    "POST /v1/deploys": () => ({ $status: 201 }),
+    [`GET ${p}/envs`]: old,
+    [`PUT ${p}/secrets`]: () => ({ keys: [] }),
+    [`POST ${p}/rollback`]: () => ({ app: { currentDeployId: "dep_0" } }),
+    [`GET ${p}/logs`]: () => ({}),
+    [`GET ${p}/db`]: () => ({ tables: {} }),
+  });
   try {
     await assert.rejects(cli(dir, api, "deploy", "--env", "staging"), (e: ExecError) => e.code === 1);
-    assert.ok(!api.calls.some((c: Wire) => c.path === "/v1/deploys"));
+    for (const args of [["secrets", "set", "A=1"], ["secrets", "unset", "A"], ["rollback"], ["logs"], ["db"], ["promote", "-y"]]) {
+      await assert.rejects(cli(dir, api, ...args, "--env", "staging"), (e: ExecError) => /doesn't have environments/.test(e.stderr), args.join(" "));
+    }
+    assert.ok(!api.calls.some((c: Wire) => c.path === "/v1/deploys" || c.method === "PUT" || c.path.includes("/rollback") || c.path.includes("/logs") || c.path.includes("/db")),
+      JSON.stringify(api.calls.map((c: Wire) => `${c.method} ${c.path}`)));
   } finally {
     await api.close();
   }

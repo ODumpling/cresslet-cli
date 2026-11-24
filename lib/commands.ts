@@ -892,6 +892,7 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const env = envFrom(flags, target);
   const api = appClient(flags, project, name);
+  await assertEnv(api, name, env);
   const r = await api.get<{
     app: { name: string; url: string; claimed: boolean; expiresAt: string; config: { routes?: string[]; server?: unknown } };
     runtime: { running: boolean; pid?: number };
@@ -941,6 +942,18 @@ function envFrom(flags: Flags, target?: string): string | undefined {
     return undefined;
   }
 }
+/**
+ * Before a command acts on an environment: the server must have environments (an older one ignores `?env=` and
+ * `env` in a body, so the command would read or change production) and the app this one.
+ */
+async function assertEnv(api: Client, name: string, env: string | undefined): Promise<void> {
+  if (!env) return;
+  const r = await api.get<{ environments: { name: string }[] }>(`/v1/apps/${encodeURIComponent(name)}/envs`).catch((e: CliError) => {
+    if (e.code === "not_found" && /no such endpoint/.test(e.message)) throw new CliError(`${api.base} doesn't have environments (update the server): nothing was done`);
+    throw e;
+  });
+  if (!r.environments.some((e) => e.name === env)) throw new CliError(`${name} has no ${env} environment`, `deploy to it first: cresslet deploy --env ${env}`);
+}
 /** `path` of one of the app's environments (`?env=`; production: as is). */
 const withEnv = (p: string, env: string | undefined) => (env ? `${p}${p.includes("?") ? "&" : "?"}env=${encodeURIComponent(env)}` : p);
 
@@ -949,6 +962,7 @@ export async function cmdLogs({ _: [target], flags }: Args): Promise<void> {
   const name = target ? nameFrom(target) : appName(project ?? { link: {}, config: {} }, flags);
   const env = envFrom(flags, target);
   const api = appClient(flags, project, name);
+  await assertEnv(api, name, env);
   const follow = !!(flags.follow ?? flags.f);
   const res = await api.get(withEnv(`/v1/apps/${encodeURIComponent(name)}/logs?n=${Number(flags.n ?? 100)}${follow ? "&follow=1" : ""}`, env), { stream: true });
   const dec = new TextDecoder();
@@ -977,6 +991,7 @@ export async function cmdDb({ _: [sql], flags }: Args): Promise<void> {
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const env = envFrom(flags);
   const api = appClient(flags, project, name);
+  await assertEnv(api, name, env);
   if (sql) {
     const r = await api.post<{ rows: unknown[] }>(withEnv(`/v1/apps/${encodeURIComponent(name)}/db/query`, env), { sql });
     return out(flags, () => console.table(r.rows), r);
@@ -1001,6 +1016,7 @@ export async function cmdSecrets({ _: [sub, ...rest], flags }: Args): Promise<vo
   // `--env staging`: its own secrets, overriding production's (which it sees too).
   const env = envFrom(flags);
   const api = appClient(flags, project, name);
+  await assertEnv(api, name, env);
   const at = withEnv(`/v1/apps/${encodeURIComponent(name)}/secrets`, env);
   if (!sub || sub === "list" || sub === "ls") {
     const r = await api.get<{ keys: string[]; secrets?: { key: string; source: string }[] }>(at);
@@ -1089,6 +1105,7 @@ export async function cmdRollback({ _: [deployId], flags }: Args): Promise<void>
   const name = appName(project ?? { link: {}, config: {} }, flags);
   const env = envFrom(flags);
   const api = appClient(flags, project, name);
+  await assertEnv(api, name, env);
   const r = await api.post<{ app: { currentDeployId: string }; environment?: { currentDeployId: string } }>(
     `/v1/apps/${encodeURIComponent(name)}/rollback`, { deployId, ...(env ? { env } : {}) },
   );
