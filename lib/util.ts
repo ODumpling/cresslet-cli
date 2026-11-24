@@ -62,6 +62,11 @@ export interface GlobalConfig {
   api?: string;
   /** API base → token */
   tokens?: Record<string, string>;
+  /**
+   * API base → how its token came: "browser" = minted by `cresslet login` (logout revokes it); missing = imported
+   * (`login --token`, or a login from before this was recorded: logout leaves it valid).
+   */
+  minted?: Record<string, "browser">;
 }
 
 export function readGlobal(): GlobalConfig {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { execFileSync, spawn } from "node:child_process";
+import { agentStore } from "./agents.ts";
 import { apiBase, apiSource, type Client, client } from "./api.ts";
 import { build, type FrameworkBuild, frameworkBuild, listFiles, listSources, notStatic, readSource, runCommand } from "./build.ts";
 import { dev } from "./dev.ts";
@@ -735,6 +736,11 @@ export async function cmdLogin({ flags }: Args): Promise<void> {
   }
   const g = readGlobal();
   g.tokens = { ...g.tokens, [api.base]: r.token };
+  // Minted for this login (logout revokes it), or brought in with --token (logout leaves it valid).
+  const minted = { ...g.minted };
+  if (typeof flags.token === "string") delete minted[api.base];
+  else minted[api.base] = "browser";
+  g.minted = minted;
   writeGlobal(g);
   out(flags, `${color.green("✔")} logged in as ${color.bold(who(r.account))} on ${api.base}`, { account: r.account, api: api.base });
 }
@@ -789,12 +795,50 @@ function openUrl(url: string): void {
   } catch { /* no browser */ }
 }
 
+/**
+ * Logs out of the saved login only (never CRESSLET_TOKEN: named if set, left alone): its remembered Live Link agents
+ * are revoked on the server (with that token) and their files deleted; the token itself is revoked only if
+ * `cresslet login` minted it (an imported one, `login --token`, stays valid). Remote failures are reported.
+ */
 export async function cmdLogout({ flags }: Args): Promise<void> {
   const base = apiBase(flags);
   const g = readGlobal();
+  const saved = g.tokens?.[base];
+  const notes: string[] = [];
+  if (process.env.CRESSLET_TOKEN) notes.push("CRESSLET_TOKEN is set: logout doesn't touch it (unset it to stop using it)");
+  let revokedAgents: string[] = [];
+  let tokenRevoked = false;
+  const failures: string[] = [];
+  if (saved) {
+    const api = client({ flags: { ...flags, api: base } });
+    const store = agentStore({ api: base, token: saved });
+    if (store.list().length) {
+      try {
+        revokedAgents = (await api.post<{ revoked: string[] }>("/v1/me/agents/revoke", {}, { token: saved })).revoked;
+      } catch (e) {
+        failures.push(`couldn't revoke this login's remembered agents on ${base} (${(e as Error).message}); forget them in Studio → Settings → Connected agents`);
+      }
+    }
+    const removed = store.removeAll();
+    if (removed.length) notes.push(`deleted ${removed.length} remembered agent${removed.length === 1 ? "" : "s"}`);
+    if (g.minted?.[base] === "browser") {
+      try {
+        await api.post("/v1/me/token/revoke", {}, { token: saved });
+        tokenRevoked = true;
+      } catch (e) {
+        failures.push(`couldn't revoke the login's token on ${base} (${(e as Error).message}); revoke it in Studio → Settings → API tokens`);
+      }
+    }
+  }
   if (g.tokens) delete g.tokens[base];
+  if (g.minted) delete g.minted[base];
   writeGlobal(g);
-  out(flags, `logged out of ${base}`, { api: base });
+  out(flags, () => {
+    console.log(saved ? `logged out of ${base}${tokenRevoked ? " (token revoked)" : ""}` : `not logged in to ${base}`);
+    for (const n of notes) console.log(color.dim(n));
+    for (const f of failures) console.error(`${color.yellow("!")} ${f}`);
+  }, { api: base, tokenRevoked, revokedAgents, failures });
+  if (failures.length) process.exitCode = 1;
 }
 
 export async function cmdWhoami({ flags }: Args): Promise<void> {

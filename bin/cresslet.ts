@@ -27,7 +27,7 @@ const COMMANDS: Record<string, [(args: Args) => Promise<void>, string, string]> 
   open: [c.cmdOpen, "open", "open the deployed app"],
   delete: [c.cmdDelete, "delete [-y]", "delete the app and its data"],
   login: [c.cmdLogin, "login [--token t] [--no-browser]", "log in in the browser, or with a token from studio Settings"],
-  logout: [c.cmdLogout, "logout", "forget the token"],
+  logout: [c.cmdLogout, "logout", "log out: revoke this login's remembered agents (and a token login minted)"],
   whoami: [c.cmdWhoami, "whoami", "show the logged-in account"],
   claim: [c.cmdClaim, "claim", "attach this app to your account (no expiry, net + secrets)"],
   apps: [c.cmdApps, "apps", "list your apps"],

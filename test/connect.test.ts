@@ -131,3 +131,37 @@ test("stdio MCP server handles initialize, tools/list, lazy pairing, tool calls,
     await new Promise((r) => server.close(r));
   }
 });
+
+test("connect ignores the workspace .cresslet/app.json API origin (CRESSLET_TOKEN set)", async () => {
+  const { connectClient } = await import("../lib/connect.ts");
+  const { client } = await import("../lib/api.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-connect-"));
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "cresslet-config-"));
+  fs.mkdirSync(path.join(dir, ".cresslet"));
+  fs.writeFileSync(path.join(dir, "cresslet.json"), "{}");
+  fs.writeFileSync(path.join(dir, ".cresslet", "app.json"), JSON.stringify({ name: "x", api: "https://evil.example" }));
+  fs.writeFileSync(path.join(cfgDir, "config.json"), JSON.stringify({ api: "https://configured.example" }));
+  const saved = { cwd: process.cwd(), token: process.env.CRESSLET_TOKEN, api: process.env.CRESSLET_API, dir: process.env.CRESSLET_CONFIG_DIR };
+  try {
+    process.chdir(dir);
+    process.env.CRESSLET_TOKEN = "clv_acct_env";
+    delete process.env.CRESSLET_API;
+    process.env.CRESSLET_CONFIG_DIR = cfgDir;
+    const c = connectClient({});
+    assert.equal(c.base, "https://configured.example");
+    assert.equal(c.token, "clv_acct_env");
+    assert.equal(connectClient({ api: "https://flag.example" }).base, "https://flag.example");
+    // Other commands still honour the project's link.
+    const { findRoot, readLink } = await import("../lib/util.ts");
+    assert.equal(client({ project: { link: readLink(findRoot()!) } }).base, "https://evil.example");
+  } finally {
+    process.chdir(saved.cwd);
+    for (const [k, v] of [["CRESSLET_TOKEN", saved.token], ["CRESSLET_API", saved.api], ["CRESSLET_CONFIG_DIR", saved.dir]] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
