@@ -104,7 +104,13 @@ test("cresslet/vite plugin: the SDK works under vite dev (db, kv, secrets, app),
   const httpServer = new EventEmitter();
   const server = { config: { root: dir, server: { port: 5199 } }, watcher, httpServer, resolvedUrls: null as { local: string[] } | null };
   const plugin = vitePlugin();
-  assert.equal(plugin.apply, "serve");
+  // in builds too (no `apply`): `.sql` imports are their text (drizzle-kit's drizzle/migrations.js)
+  assert.equal(plugin.apply, undefined);
+  fs.writeFileSync(path.join(dir, "m.sql"), "CREATE TABLE `t` (\n\t`id` integer\n);");
+  const load = (plugin as unknown as { load(id: string): string | null }).load;
+  assert.equal(load(path.join(dir, "m.sql")), 'export default "CREATE TABLE `t` (\\n\\t`id` integer\\n);";');
+  assert.equal(load(path.join(dir, "m.sql") + "?raw"), null);
+  assert.equal(load(path.join(dir, "x.ts")), null);
   // (the plugin's published type leaves its Vite hooks `unknown`)
   await (plugin as unknown as { configureServer(s: typeof server): Promise<void> }).configureServer(server);
   try {
@@ -145,6 +151,14 @@ test("build produces hashed client + server bundle", async () => {
   const html = fs.readFileSync(path.join(dir, "dist", "index.html"), "utf8");
   assert.match(html, new RegExp(`src="/${js}"`));
   assert.ok(fs.readFileSync(r.serverFile!, "utf8").includes("export")); // (the fixture has a server)
+});
+
+test("build: a server's .sql imports are their text", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "server", "m.sql"), "CREATE TABLE t (id integer);");
+  fs.writeFileSync(path.join(dir, "server", "index.ts"), 'import m from "./m.sql";\nexport default { fetch: () => new Response(m) };\n');
+  const r = await build(dir);
+  assert.match(fs.readFileSync(r.serverFile!, "utf8"), /"CREATE TABLE t \(id integer\);"/);
 });
 
 test("dev server: static, api with sqlite, dotfiles hidden", async () => {

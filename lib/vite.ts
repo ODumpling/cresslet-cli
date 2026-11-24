@@ -1,7 +1,8 @@
 // `import { cresslet } from "cresslet/vite"`: a Vite plugin that gives the dev server the app's bindings, so server code
 // (TanStack Start server functions and routes, any Vite SSR framework) can `import { db, kv, files, secrets, app } from
 // "cresslet"` under `vite dev` as it does on the platform. Same local data as `cresslet dev` (.cresslet/dev/data),
-// secrets from .env.cresslet (re-read on save). Production builds don't use it: the platform provides the bindings.
+// secrets from .env.cresslet (re-read on save). Production builds use it only for `.sql` imports (text): the platform
+// provides the bindings.
 import fs from "node:fs";
 import path from "node:path";
 import { createEnv, type DevEnv, type PublishedRuntime, RUNTIME_CONTRACT, RUNTIME_KEY, runtimeGlobal } from "./bindings.ts";
@@ -26,11 +27,14 @@ function appName(root: string): string {
   return path.basename(root);
 }
 
-/** Vite plugin: the app's Cresslet bindings (db, kv, files, secrets, app) for server code under `vite dev`. */
+/**
+ * Vite plugin: the app's Cresslet bindings (db, kv, files, secrets, app) for server code under `vite dev`, and `.sql`
+ * imports as text (dev and build: drizzle-kit's drizzle/migrations.js imports its migrations so).
+ */
 export function cresslet(options: {
   /** Where the local db and files live. Default: .cresslet/dev/data (shared with `cresslet dev`). */
   dataDir?: string;
-} = {}): { name: string; apply: "serve"; [hook: string]: unknown } {
+} = {}): { name: string; [hook: string]: unknown } {
   let env: DevEnv | null = null;
   let previous: unknown;
   let runtime: PublishedRuntime | null = null;
@@ -42,7 +46,11 @@ export function cresslet(options: {
   };
   return {
     name: "cresslet",
-    apply: "serve",
+    load(id: string) {
+      if (!id.endsWith(".sql") || id.startsWith("\0")) return null; // (`?raw` and other queries: Vite's own)
+      return `export default ${JSON.stringify(fs.readFileSync(id, "utf8"))};`;
+    },
+    // (configureServer: `vite dev` only)
     async configureServer(server: ViteDevServerLike) {
       const root = server.config.root;
       const secretsFile = path.join(root, ".env.cresslet");

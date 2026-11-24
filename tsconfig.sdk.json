@@ -1,9 +1,9 @@
 {
-  // The SDK alone, without Node's types: it runs in app servers (workerd, the studio's container), not in Node.
+  // The SDK (and cresslet/drizzle) alone, without Node's types: it runs in app servers (workerd, the studio's container), not in Node.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["es2023", "dom"],
     "types": []
   },
-  "include": ["sdk/index.ts"]
+  "include": ["sdk/index.ts", "sdk/drizzle.ts"]
 }

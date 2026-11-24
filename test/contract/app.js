@@ -111,6 +111,23 @@ const cases = {
       ])));
     eq(await db.first("SELECT n FROM contract_c WHERE k = 'x'"), { n: 20 }, "counter");
   },
+  "db.raw: rows as arrays in column order, same-named columns each kept (contract 2)": async () => {
+    await db.exec("DROP TABLE IF EXISTS contract_r; CREATE TABLE contract_r (id INTEGER PRIMARY KEY, v TEXT, b BLOB)");
+    await db.run(db.sql`INSERT INTO contract_r (id, v, b) VALUES (${7}, ${"x"}, ${new Uint8Array([9])})`);
+    const rows = await db.raw(db.sql`SELECT a.id, b.id, a.v, 1 AS "2", a.b FROM contract_r a JOIN contract_r b ON b.id = a.id WHERE a.v = ${"x"}`);
+    eq(rows.map((r) => r.slice(0, 4)), [[7, 7, "x", 1]], "rows");
+    eq([rows[0][4] instanceof Uint8Array, [...rows[0][4]]], [true, [9]], "blob");
+    eq(await db.raw("SELECT id FROM contract_r WHERE id = ?", 999), [], "no rows");
+    eq(await db.raw(db.sql`INSERT INTO contract_r (v) VALUES (${"y"}) RETURNING id, v`), [[8, "y"]], "RETURNING");
+  },
+  "db.batch with raw statements: their rows as arrays, the others' as objects": async () => {
+    const out = await db.batch([
+      { sql: "SELECT a.id, b.id FROM contract_r a JOIN contract_r b ON b.id = a.id WHERE a.id = ?", params: [7], raw: true },
+      { sql: "SELECT id FROM contract_r WHERE id = ?", params: [7] },
+      { sql: "UPDATE contract_r SET v = ? WHERE id = ?", params: ["z", 8], raw: true },
+    ]);
+    eq(out.map((r) => [r.rows, r.changes]), [[[[7, 7]], 0], [[{ id: 7 }], 0], [[], 1]], "batch results");
+  },
   "secrets.get, optional, record access": async () => {
     eq(secrets.get("CONTRACT_SECRET"), "s3cret", "get");
     eq(secrets.CONTRACT_SECRET, "s3cret", "record");

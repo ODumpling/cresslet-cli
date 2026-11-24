@@ -20,6 +20,10 @@
       "types": "./dist/sdk/index.d.ts",
       "default": "./dist/sdk/index.js"
     },
+    "./drizzle": {
+      "types": "./dist/sdk/drizzle.d.ts",
+      "default": "./dist/sdk/drizzle.js"
+    },
     "./vite": {
       "types": "./dist/lib/vite.d.ts",
       "default": "./dist/lib/vite.js"
@@ -53,9 +57,18 @@
     "esbuild": "^0.28.2",
     "ws": "^8.23.0"
   },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.44.0 <1"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@types/ws": "^8.18.2",
+    "drizzle-orm": "^0.45.4",
     "less": "^4.9.1",
     "postcss": "^8.5.33",
     "sass": "^1.108.2",

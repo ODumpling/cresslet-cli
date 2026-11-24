@@ -39,11 +39,65 @@ export default {
 
 - ``db.sql`...` ``: each `${value}` is a parameter, never SQL text (a nested `db.sql` fragment is spliced in). Pass it to `db.query` (rows), `db.first` (row | null), `db.run` (`{changes, lastInsertRowid}`), or `await` it for the rows. `query/first/run(sql, ...params)` with `?` still work; `db.exec(sql)` runs DDL.
 - `db.batch([...statements])`: one transaction, all or nothing, with no other request's statement in between; one `{rows, changes, lastInsertRowid}` per statement.
+- `db.raw(q)` (contract 2): the rows as arrays of values in column order, so same-named columns (a join's `id`s) each keep theirs; a `{ sql, params, raw: true }` statement in `db.batch` does the same. Query builders use it (`cresslet/drizzle`). Under `cresslet dev` it needs Node ≥ 22.16.
 - `kv` (0.3.0): JSON values by key with optional TTL, kept in the app's own database (table `_cresslet_kv`; nothing new needed from the runtime). `kv.get(key)` → value | null, `kv.set(key, value, { ttl })` (seconds), `kv.delete(key)`, `kv.incr(key, by = 1, { ttl })` (atomic; ttl starts the window: rate limits), `kv.list(prefix, { limit })` → `{key, value, expiresAt}[]`.
 - `files.put/get/delete/list`, `secrets.NAME` / `Object.keys(secrets)`, `app.{id,name,url,deployId,env}` (`env`: `"production"`, or `"staging"`): as on `env`.
 - Bindings exist once a handler runs: using them at module top level throws a `CressletError` that says so. The `env` argument of `fetch(req, env)` keeps working.
-- Needs a runtime with SDK support (runtime contract 1): `cresslet dev` from this package ≥ 0.2.0, and a Cresslet platform / studio that ships it. On an older one the SDK throws a `CressletError` saying what to update.
+- Needs a runtime with SDK support (runtime contract 1; `db.raw` and `cresslet/drizzle`: 2): `cresslet dev` from this package, and a Cresslet platform / studio that ships it. On an older one the SDK throws a `CressletError` saying what to update.
 - Types: `Env`, `ScheduledEvent`, `WebSocketPair` and the other runtime globals come with the package, so a project no longer needs `server/cresslet.d.ts` (delete it when you import from `"cresslet"`: its globals would be declared twice).
+
+## Database schema: Drizzle (`cresslet/drizzle`)
+
+When an app needs tables, define them with [Drizzle](https://orm.drizzle.team) and let drizzle-kit write the migrations: don't write migration SQL (or `CREATE TABLE IF NOT EXISTS` on each request) by hand. An app without a database needs none of this.
+
+```sh
+npm i drizzle-orm && npm i -D drizzle-kit
+```
+
+```ts
+// drizzle.config.ts
+import { defineConfig } from "drizzle-kit";
+export default defineConfig({ dialect: "sqlite", driver: "durable-sqlite", schema: "./server/schema.ts", out: "./drizzle" });
+```
+
+```ts
+// drizzle/migrations.d.ts (once; drizzle-kit leaves it alone): types for the migrations.js it writes
+declare const migrations: import("cresslet/drizzle").Migrations;
+export default migrations;
+```
+
+```ts
+// server/schema.ts
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+export const todos = sqliteTable("todos", {
+  id: integer().primaryKey(),
+  title: text().notNull(),
+  done: integer({ mode: "boolean" }).notNull().default(false),
+});
+```
+
+```ts
+// server/index.ts
+import { db } from "cresslet";
+import { drizzle, migrate } from "cresslet/drizzle";
+import * as schema from "./schema";
+import migrations from "../drizzle/migrations";
+
+const orm = drizzle(db, { schema }); // module top level is fine: it only queries when used
+
+export default {
+  async fetch(req: Request) {
+    await migrate(db, migrations); // once per sandbox (later calls return at once): before any query
+    return Response.json(await orm.select().from(schema.todos));
+  },
+};
+```
+
+- Changing the schema: edit `schema.ts`, run `npx drizzle-kit generate` (it writes `drizzle/NNNN_*.sql`, `drizzle/meta/` and `drizzle/migrations.js`), commit all of `drizzle/`. Run it before the first deploy too: until then there is no `drizzle/migrations.js` to import. Never edit or delete a generated migration that has been deployed; generate a new one. `npx drizzle-kit generate --custom` makes an empty one for data changes, one statement per `--> statement-breakpoint`.
+- `driver: "durable-sqlite"` is what makes drizzle-kit write `drizzle/migrations.js` (the migrations imported as text: `cresslet build`, `cresslet dev`, the `cresslet/vite` plugin and the studio load `.sql` imports as text). Keep `breakpoints` on (the default).
+- `migrate(db, migrations)` applies the ones the database hasn't had, each in one transaction with its row in `__drizzle_migrations` (Drizzle's own table). Requests starting together apply each once. A migration that rebuilds a table (drizzle-kit's `PRAGMA foreign_keys=OFF` … `ON`) runs with foreign keys off, so rows referencing the rebuilt table aren't cascaded away. Call it where every request passes first: the top of `fetch` (and `scheduled`), or a TanStack Start request middleware (`src/start.ts`).
+- `orm.batch([...])`: several statements in one transaction, all or none. `orm.transaction()` throws: its statements would span awaits with other requests' in between; use `orm.batch`.
+- Everything else is Drizzle's own API (`select`, joins, `insert … returning`, `orm.query.*` with `relations`). `drizzle-orm` is a peer dependency (≥ 0.44, < 1).
 
 ## Framework apps (Vite: TanStack Start, …)
 

@@ -175,6 +175,8 @@ export function serverOptions(root: string, entry: string, outfile: string, { de
     mainFields: ["module", "main"],
     conditions: ["worker", "browser", "import", "default"],
     external: ["node:*"],
+    // `.sql` imports are their text: drizzle-kit's drizzle/migrations.js (cresslet/drizzle's migrate) imports them so
+    loader: { ".sql": "text" },
     minify: false,
     sourcemap: dev ? "inline" : false,
     define: { "process.env.NODE_ENV": JSON.stringify(dev ? "development" : "production") },
