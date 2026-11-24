@@ -263,12 +263,15 @@ export async function cmdDeploy({ _: [target], flags }: Args): Promise<void> {
   if (!flags.json) process.stderr.write(color.dim(`deploying ${files.length} files (${formatBytes(bytes)}) to ${env ? `${name}'s ${env} on ` : ""}${api.base}…\n`));
   if (env) {
     // Its own route: a server without environments answers 404 (never a deploy to production).
-    const r = await api.post<{ app: { name: string }; environment: { name: string; url: string }; deploy: { id: string; warning?: string } }>(
-      `/v1/apps/${encodeURIComponent(name!)}/envs/${encodeURIComponent(env)}/deploys`,
-      { files, server, config: { routes: project.config.routes, crons: project.config.crons }, source: "cli", sources, ...(git ? { git } : {}) },
-    ).catch((e: CliError) => {
+    type EnvDeployed = { app: { name: string }; environment: { name: string; url: string }; deploy: { id: string; warning?: string } };
+    const envBody = { files, server, config: { routes: project.config.routes, crons: project.config.crons }, source: "cli", sources, ...(git ? { git } : {}) };
+    const to = `/v1/apps/${encodeURIComponent(name!)}/envs/${encodeURIComponent(env)}/deploys`;
+    const r = await api.post<EnvDeployed>(to, envBody).catch(async (e: CliError) => {
       if (e.code === "not_found" && /no such endpoint/.test(e.message)) throw new CliError(`${api.base} doesn't have environments (update the server)`);
-      throw e;
+      // As for production: a server with lower limits takes it without the source.
+      if (!sources || e.code !== "too_large" || !/source included/.test(e.message)) throw e;
+      warn(`source not uploaded (${e.message}); \`cresslet pull\` won't have this deploy`);
+      return api.post<EnvDeployed>(to, { ...envBody, sources: undefined });
     });
     return out(flags, () => {
       console.log(`${color.green("✔")} deployed ${color.bold(r.app.name)} to ${color.bold(r.environment.name)} ${color.dim(`(${r.deploy.id}, ${Math.round(performance.now() - t0)}ms)`)}`);
@@ -899,14 +902,15 @@ export async function cmdInspect({ _: [target], flags }: Args): Promise<void> {
     secrets: string[];
     deploys: { current: boolean; id: string; createdAt: string; files: number; bytes: number; server: unknown; source: string; git?: { sha: string; branch: string | null } | null }[];
     repo?: { fullName: string } | null;
-    environments?: { name: string; url: string; currentDeployId: string | null }[];
+    environments?: { name: string; url: string; currentDeployId: string | null; config?: { routes?: string[]; server?: unknown } | null }[];
   }>(withEnv(`/v1/apps/${encodeURIComponent(name)}`, env));
   out(flags, () => {
     const a = r.app;
     const here = env ? r.environments?.find((e) => e.name === env) : undefined;
     console.log(`${color.bold(a.name)}${env ? ` (${env})` : ""}  ${color.cyan(here?.url ?? a.url)}`);
     console.log(`  claimed: ${a.claimed ? "yes" : `no (expires ${a.expiresAt})`}`);
-    console.log(`  routes:  ${(a.config.routes ?? []).join(", ")}${a.config.server ? "" : " (no server)"}`);
+    const config = (env ? here?.config : null) ?? a.config; // the environment's own (its deploy's routes and server)
+    console.log(`  routes:  ${(config.routes ?? []).join(", ")}${config.server ? "" : " (no server)"}`);
     console.log(`  runtime: ${r.runtime.running ? `running (pid ${r.runtime.pid})` : "idle"}`);
     console.log(`  secrets: ${r.secrets.length ? r.secrets.join(", ") : "none"}`);
     if (r.repo) console.log(`  repo:    ${r.repo.fullName}`);
