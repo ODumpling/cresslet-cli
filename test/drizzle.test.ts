@@ -1,6 +1,7 @@
 // cresslet/drizzle (sdk/drizzle.ts) on `cresslet dev`: queries (joins whose columns share a name), orm.batch, the
 // relational API, and migrate() with migrations as drizzle-kit generates them (driver: "durable-sqlite"), including a
 // rebuild of a referenced table and requests starting together.
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -129,7 +130,10 @@ m0001
   return dir;
 }
 
-test("cresslet/drizzle on cresslet dev: migrations, joins, batch, relational queries", async () => {
+// db.raw under `cresslet dev` needs node:sqlite's setReturnArrays (Node 22.16; the package supports 22.13)
+const rawArrays = typeof new DatabaseSync(":memory:").prepare("SELECT 1").setReturnArrays === "function";
+
+test("cresslet/drizzle on cresslet dev: migrations, joins, batch, relational queries", { skip: !rawArrays && "needs Node 22.16 (node:sqlite setReturnArrays)" }, async () => {
   const d = await dev(loadProject(project()), { port: 0, log: () => {} });
   const get = async (p: string) => {
     const r = await fetch(d.url + p);

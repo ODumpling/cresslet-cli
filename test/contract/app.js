@@ -28,6 +28,15 @@ const rejects = async (p, re, what) => {
   throw new Error(`${what}: no error`);
 };
 
+// db.raw under `cresslet dev` needs Node 22.16 (node:sqlite setReturnArrays); on an older Node it says so, and the raw
+// cases are skipped there. Every other runtime has it.
+let rawSupport;
+const raw = async () =>
+  (rawSupport ??= db.raw("SELECT 1").then(() => true, (e) => {
+    if (/needs Node 22\.16/.test(e.message)) return false;
+    throw e;
+  }));
+
 const cases = {
   "module top level fails with a message saying so": () => {
     if (!/CressletError/.test(topLevel) || !/module top level/.test(topLevel)) throw new Error(topLevel);
@@ -112,6 +121,7 @@ const cases = {
     eq(await db.first("SELECT n FROM contract_c WHERE k = 'x'"), { n: 20 }, "counter");
   },
   "db.raw: rows as arrays in column order, same-named columns each kept (contract 2)": async () => {
+    if (!(await raw())) return;
     await db.exec("DROP TABLE IF EXISTS contract_r; CREATE TABLE contract_r (id INTEGER PRIMARY KEY, v TEXT, b BLOB)");
     await db.run(db.sql`INSERT INTO contract_r (id, v, b) VALUES (${7}, ${"x"}, ${new Uint8Array([9])})`);
     const rows = await db.raw(db.sql`SELECT a.id, b.id, a.v, 1 AS "2", a.b FROM contract_r a JOIN contract_r b ON b.id = a.id WHERE a.v = ${"x"}`);
@@ -121,6 +131,7 @@ const cases = {
     eq(await db.raw(db.sql`INSERT INTO contract_r (v) VALUES (${"y"}) RETURNING id, v`), [[8, "y"]], "RETURNING");
   },
   "db.batch with raw statements: their rows as arrays, the others' as objects": async () => {
+    if (!(await raw())) return;
     const out = await db.batch([
       { sql: "SELECT a.id, b.id FROM contract_r a JOIN contract_r b ON b.id = a.id WHERE a.id = ?", params: [7], raw: true },
       { sql: "SELECT id FROM contract_r WHERE id = ?", params: [7] },
