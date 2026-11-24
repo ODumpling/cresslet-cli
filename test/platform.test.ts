@@ -1467,3 +1467,100 @@ test("logout: revokes the login's remembered agents (and a browser-login token);
     await api.close();
   }
 });
+
+test("environments: deploy --env staging (its own route, never /v1/deploys), promote, rollback/logs/secrets/db --env, env seed/rm", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a", routes: ["/api/*"] }));
+  const p = "/v1/apps/a";
+  let staging: string | null = "dep_s1";
+  const envs = () => ({ environments: [
+    { name: "production", url: "http://a.test", private: false, currentDeployId: "dep_p1" },
+    { name: "staging", url: "http://a--staging.test", private: true, currentDeployId: staging },
+  ] });
+  const api = await fakeApi({
+    [`POST ${p}/envs/staging/deploys`]: () => ({ $status: 201, app: { name: "a", url: "http://a.test" }, environment: { name: "staging", url: "http://a--staging.test" }, deploy: { id: "dep_s1" } }),
+    [`GET ${p}/envs`]: envs,
+    [`POST ${p}/promote`]: (b) => ({ app: { url: "http://a.test", currentDeployId: b.deployId }, deploy: { id: b.deployId, tag: "v3" }, promoted: true }),
+    [`POST ${p}/rollback`]: (b) => ({ app: { currentDeployId: "dep_p1" }, environment: { currentDeployId: b.env ? "dep_s0" : null } }),
+    [`GET ${p}/logs`]: () => ({}),
+    [`GET ${p}/secrets`]: () => ({ keys: ["B"], env: "staging", secrets: [{ key: "A", source: "production" }, { key: "B", source: "staging" }] }),
+    [`PUT ${p}/secrets`]: () => ({ keys: ["B"] }),
+    [`POST ${p}/db/query`]: () => ({ rows: [] }),
+    [`POST ${p}/envs/staging/seed`]: () => ({ seeded: "staging", from: "production", bytes: 2048 }),
+    [`DELETE ${p}/envs/staging`]: () => ({ deleted: "staging" }),
+  });
+  try {
+    const d = await cli(dir, api, "deploy", "--env", "staging");
+    const call = api.calls.find((c: Wire) => c.method === "POST" && c.path.includes("/deploys"));
+    assert.equal(call.path, `${p}/envs/staging/deploys`);
+    assert.equal(call.body.app, undefined);
+    assert.ok(call.body.files.length && call.body.source === "cli");
+    assert.ok(!api.calls.some((c: Wire) => c.path === "/v1/deploys"));
+    assert.match(d.stdout, /deployed a to staging/);
+    assert.match(d.stdout, /a--staging\.test/);
+    // An artifact has no environments.
+    fs.writeFileSync(path.join(dir, "x.html"), "<p>x</p>");
+    await assert.rejects(cli(dir, api, "deploy", "x.html", "--env", "staging"), (e: ExecError) => /--env is for apps/.test(e.stderr));
+
+    // Promote sends the deploy staging serves (the server refuses a stale one).
+    const pr = await cli(dir, api, "promote", "-y");
+    assert.deepEqual(api.calls.at(-1).body, { from: "staging", deployId: "dep_s1", expectProduction: "dep_p1" });
+    assert.match(pr.stdout, /promoted dep_s1 from staging to production as v3/);
+    staging = null;
+    await assert.rejects(cli(dir, api, "promote", "-y"), (e: ExecError) => /nothing is deployed to a's staging/.test(e.stderr));
+
+    await cli(dir, api, "rollback", "--env", "staging");
+    assert.deepEqual(api.calls.at(-1).body, { env: "staging" });
+    await cli(dir, api, "logs", "--env", "staging");
+    assert.equal(api.calls.at(-1).path, `${p}/logs?n=100&env=staging`);
+    const s = await cli(dir, api, "secrets", "--env", "staging");
+    assert.equal(api.calls.at(-1).path, `${p}/secrets?env=staging`);
+    assert.match(s.stdout, /A \(from production\)\nB/);
+    await cli(dir, api, "secrets", "set", "B=2", "--env", "staging");
+    assert.equal(api.calls.at(-1).path, `${p}/secrets?env=staging`);
+    await cli(dir, api, "db", "select 1", "--env", "staging");
+    assert.equal(api.calls.at(-1).path, `${p}/db/query?env=staging`);
+    const seeded = await cli(dir, api, "env", "seed", "staging");
+    assert.deepEqual(api.calls.at(-1).body, { from: "production" });
+    assert.match(seeded.stdout, /snapshot of production's/);
+    await cli(dir, api, "env", "rm", "staging", "-y");
+    assert.equal(api.calls.at(-1).method, "DELETE");
+    // `--env=` isn't production, and a command without environments refuses --env (delete would take the whole app).
+    for (const args of [["deploy", "--env="], ["secrets", "set", "A=1", "--env="], ["rollback", "--env="]]) {
+      await assert.rejects(cli(dir, api, ...args), (e: ExecError) => /--env needs an environment/.test(e.stderr), args.join(" "));
+    }
+    await assert.rejects(cli(dir, api, "delete", "-y", "--env", "staging"), (e: ExecError) => /--env isn't an option of delete/.test(e.stderr));
+    assert.ok(!api.calls.some((c: Wire) => c.method === "DELETE" && c.path === p));
+    const ls = await cli(dir, api, "env");
+    assert.match(ls.stdout, /production +http:\/\/a\.test +dep_p1/);
+  } finally {
+    await api.close();
+  }
+});
+
+test("environments: a server without them refuses every --env command; nothing reaches production", async () => {
+  const dir = copyFixture();
+  fs.writeFileSync(path.join(dir, "cresslet.json"), JSON.stringify({ name: "a" }));
+  const p = "/v1/apps/a";
+  // An older server: no environments routes ("no such endpoint"), and its other routes ignore `env`.
+  const old = () => ({ $status: 404, error: "not_found", message: "no such endpoint" });
+  const api = await fakeApi({
+    "POST /v1/deploys": () => ({ $status: 201 }),
+    [`GET ${p}/envs`]: old,
+    [`PUT ${p}/secrets`]: () => ({ keys: [] }),
+    [`POST ${p}/rollback`]: () => ({ app: { currentDeployId: "dep_0" } }),
+    [`GET ${p}/logs`]: () => ({}),
+    [`GET ${p}/db`]: () => ({ tables: {} }),
+  });
+  try {
+    await assert.rejects(cli(dir, api, "deploy", "--env", "staging"), (e: ExecError) => e.code === 1);
+    for (const args of [["secrets", "set", "A=1"], ["secrets", "unset", "A"], ["rollback"], ["logs"], ["db"]]) {
+      await assert.rejects(cli(dir, api, ...args, "--env", "staging"), (e: ExecError) => /doesn't have environments/.test(e.stderr), args.join(" "));
+    }
+    await assert.rejects(cli(dir, api, "promote", "-y"), (e: ExecError) => /doesn't have environments/.test(e.stderr));
+    assert.ok(!api.calls.some((c: Wire) => c.path === "/v1/deploys" || c.method === "PUT" || c.path.includes("/rollback") || c.path.includes("/logs") || c.path.includes("/db")),
+      JSON.stringify(api.calls.map((c: Wire) => `${c.method} ${c.path}`)));
+  } finally {
+    await api.close();
+  }
+});
