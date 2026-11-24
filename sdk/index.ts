@@ -183,7 +183,7 @@ interface Runtime {
 type ActiveRuntime = Runtime & { env: Env };
 
 /** This SDK's version. */
-const VERSION: string = "0.5.0";
+const VERSION: string = "0.6.0";
 const KEY = Symbol.for("cresslet.runtime");
 /**
  * Runtime contract each SDK feature needs. 1: env published for the SDK, db.batch, paramStyle. 2: env.db.raw and
